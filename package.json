@@ -1,0 +1,23 @@
+{
+  "name": "minpaku-os",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute minpaku-os --file=packages/db/migrations/0001_initial.sql",
+    "db:migrate:local": "wrangler d1 execute minpaku-os --local --file=packages/db/migrations/0001_initial.sql",
+    "admin:dev": "cd apps/admin && npm run dev",
+    "admin:build": "cd apps/admin && npm run build",
+    "admin:deploy": "wrangler pages deploy apps/admin/dist --project-name=minpaku-os-admin",
+    "agent:dev": "cd apps/agent && npm run dev"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240208.0",
+    "typescript": "^5.4.0",
+    "wrangler": "^3.40.0"
+  }
+}

@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+*.tsbuildinfo
+
+# Wrangler local state
+.wrangler/
+
+# Environment
+.env
+.env.local
+.dev.vars
+
+# OS
+.DS_Store

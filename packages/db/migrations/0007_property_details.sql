@@ -1,0 +1,9 @@
+ALTER TABLE properties ADD COLUMN max_guests INTEGER;
+ALTER TABLE properties ADD COLUMN description TEXT;
+ALTER TABLE properties ADD COLUMN amenities TEXT;
+ALTER TABLE properties ADD COLUMN access_info TEXT;
+ALTER TABLE properties ADD COLUMN house_rules TEXT;
+ALTER TABLE properties ADD COLUMN wifi_ssid TEXT;
+ALTER TABLE properties ADD COLUMN wifi_password TEXT;
+ALTER TABLE properties ADD COLUMN emergency_contact TEXT;
+ALTER TABLE properties ADD COLUMN notes TEXT;

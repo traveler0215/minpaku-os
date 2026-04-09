@@ -1,0 +1,1 @@
+ALTER TABLE staff ADD COLUMN wage_type TEXT NOT NULL DEFAULT 'hourly';
