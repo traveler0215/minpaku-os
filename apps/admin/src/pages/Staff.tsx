@@ -173,12 +173,12 @@ export function StaffPage(): JSX.Element {
                 <button
                   type="button"
                   onClick={() => {
-                    const msg = `【民泊OS スタッフ招待】\n\n① 下記リンクから友だち追加してください\n${window.location.origin}/line-add\n\n② 追加したら招待コードを送信してください\n招待コード: ${inviteCode}\n\n※コードは24時間有効です`
+                    const msg = `【民泊OS スタッフ招待】\n\n① 下記リンクから友だち追加してください\n${import.meta.env.VITE_LINE_ADD_URL ?? 'https://line.me/R/ti/p/YOUR_LINE_BOT_ID'}\n\n② 追加したら招待コードを送信してください\n招待コード: ${inviteCode}\n\n※コードは24時間有効です`
                     void navigator.clipboard.writeText(msg).then(() => setMessage('メッセージをコピーしました'))
                   }}
                   className="w-full whitespace-pre-line rounded-lg border border-gray-200 bg-white p-3 text-left text-sm text-gray-800 hover:bg-gray-50"
                 >
-                  {`【民泊OS スタッフ招待】\n\n① 下記リンクから友だち追加してください\n${window.location.origin}/line-add\n\n② 追加したら招待コードを送信してください\n招待コード: ${inviteCode}\n\n※コードは24時間有効です`}
+                  {`【民泊OS スタッフ招待】\n\n① 下記リンクから友だち追加してください\n${import.meta.env.VITE_LINE_ADD_URL ?? 'https://line.me/R/ti/p/YOUR_LINE_BOT_ID'}\n\n② 追加したら招待コードを送信してください\n招待コード: ${inviteCode}\n\n※コードは24時間有効です`}
                 </button>
               </div>
             </div>
