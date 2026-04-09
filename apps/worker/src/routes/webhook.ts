@@ -349,9 +349,6 @@ async function tryRegisterStaffFromInvite(
   const code = rawCode.trim()
   if (!/^\d{6}$/.test(code)) return null
 
-  const pending = await env.KV.get(invitePendingKey(lineUserId))
-  if (!pending) return null
-
   const invite = await readInvitePayload(env, code)
   if (!invite) return null
 
