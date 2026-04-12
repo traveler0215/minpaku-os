@@ -19,6 +19,8 @@ const MESSAGE_TYPE_LABEL: Record<MessageDraft['message_type'], string> = {
   custom: 'カスタム',
 }
 
+const AGENT_ENABLED = import.meta.env.VITE_AGENT_ENABLED === 'true'
+
 export function MessagesPage(): JSX.Element {
   const { token } = useAuth()
   const [searchParams] = useSearchParams()
@@ -281,16 +283,18 @@ export function MessagesPage(): JSX.Element {
                   value={originalText}
                   onChange={(event) => setOriginalText(event.target.value)}
                 />
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => void handleGenerate()}
-                    className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90"
-                    style={{ backgroundColor: '#06C755' }}
-                  >
-                    生成する
-                  </button>
-                </div>
+                {AGENT_ENABLED && (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerate()}
+                      className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90"
+                      style={{ backgroundColor: '#06C755' }}
+                    >
+                      生成する
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 

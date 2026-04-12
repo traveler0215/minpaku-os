@@ -5,6 +5,16 @@ import type { Property, Staff } from '../lib/types'
 
 const inputClassName = 'w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20'
 
+type MessageTarget =
+  | { kind: 'individual'; staff_id: string }
+  | { kind: 'role'; role: Staff['role'] }
+  | { kind: 'all' }
+
+interface MessageDraft {
+  target: MessageTarget
+  text: string
+}
+
 export function StaffPage(): JSX.Element {
   const { token } = useAuth()
   const [staff, setStaff] = useState<Staff[]>([])
@@ -13,7 +23,10 @@ export function StaffPage(): JSX.Element {
   const [wageTypeDrafts, setWageTypeDrafts] = useState<Record<string, 'hourly' | 'daily'>>({})
   const [inviteName, setInviteName] = useState('')
   const [inviteRole, setInviteRole] = useState<Staff['role']>('cleaner')
+  const [inviteProperties, setInviteProperties] = useState<string[]>([])
   const [inviteCode, setInviteCode] = useState<string | null>(null)
+  const [messageDraft, setMessageDraft] = useState<MessageDraft | null>(null)
+  const [sendingMessage, setSendingMessage] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
@@ -43,14 +56,34 @@ export function StaffPage(): JSX.Element {
       setMessage(null)
       const result = await apiFetch<{ invite_code: string }>('/api/staff/invite', {
         method: 'POST',
-        body: JSON.stringify({ name: inviteName, role: inviteRole }),
+        body: JSON.stringify({ name: inviteName, role: inviteRole, property_ids: inviteProperties }),
       }, token)
       setInviteCode(result.invite_code)
       setMessage('招待コードを発行しました。')
       setInviteName('')
+      setInviteProperties([])
       await load()
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : '招待コードの発行に失敗しました。')
+    }
+  }
+
+  async function toggleStaffProperty(member: Staff, propertyId: string): Promise<void> {
+    if (!token) return
+    const current = member.property_ids ?? []
+    const next = current.includes(propertyId)
+      ? current.filter((id) => id !== propertyId)
+      : [...current, propertyId]
+
+    try {
+      setError(null)
+      await apiFetch(`/api/staff/${member.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ property_ids: next }),
+      }, token)
+      await load()
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '担当物件の更新に失敗しました。')
     }
   }
 
@@ -113,6 +146,60 @@ export function StaffPage(): JSX.Element {
     }
   }
 
+  function openMessageModalForStaff(member: Staff): void {
+    setMessageDraft({ target: { kind: 'individual', staff_id: member.id }, text: '' })
+    setError(null)
+    setMessage(null)
+  }
+
+  function openMessageModalBroadcast(): void {
+    setMessageDraft({ target: { kind: 'all' }, text: '' })
+    setError(null)
+    setMessage(null)
+  }
+
+  async function handleSendMessage(): Promise<void> {
+    if (!token || !messageDraft) return
+    const text = messageDraft.text.trim()
+    if (!text) {
+      setError('メッセージを入力してください。')
+      return
+    }
+    if (text.length > 5000) {
+      setError('メッセージは5000文字以内で入力してください。')
+      return
+    }
+
+    setSendingMessage(true)
+    try {
+      setError(null)
+      if (messageDraft.target.kind === 'individual') {
+        const result = await apiFetch<{ staff_name: string; sent_to: number }>(
+          `/api/staff/${messageDraft.target.staff_id}/message`,
+          { method: 'POST', body: JSON.stringify({ text }) },
+          token,
+        )
+        setMessage(`${result.staff_name}さんに送信しました。`)
+      } else {
+        const body: { text: string; role?: Staff['role'] } = { text }
+        if (messageDraft.target.kind === 'role') {
+          body.role = messageDraft.target.role
+        }
+        const result = await apiFetch<{ sent_to: number }>(
+          '/api/staff/broadcast',
+          { method: 'POST', body: JSON.stringify(body) },
+          token,
+        )
+        setMessage(`${result.sent_to}名に送信しました。`)
+      }
+      setMessageDraft(null)
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'メッセージの送信に失敗しました。')
+    } finally {
+      setSendingMessage(false)
+    }
+  }
+
   async function deactivateStaff(member: Staff): Promise<void> {
     if (!token) return
 
@@ -130,9 +217,18 @@ export function StaffPage(): JSX.Element {
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">スタッフ管理</h1>
-          <p className="mt-1 text-sm text-gray-500">役割、時給、LINE連携状況を一元管理します</p>
+        <div className="flex items-start justify-between gap-3 lg:block">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">スタッフ管理</h1>
+            <p className="mt-1 text-sm text-gray-500">役割、時給、LINE連携状況を一元管理します</p>
+          </div>
+          <button
+            type="button"
+            onClick={openMessageModalBroadcast}
+            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 lg:mt-3"
+          >
+            ✉️ メッセージ送信
+          </button>
         </div>
         <div className="w-full max-w-md rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between gap-3">
@@ -166,6 +262,30 @@ export function StaffPage(): JSX.Element {
               <option value="manager">マネージャー</option>
             </select>
           </div>
+          {properties.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1.5 text-xs font-medium text-gray-500">担当物件（後から変更可能）</p>
+              <div className="flex flex-wrap gap-x-3 gap-y-1.5">
+                {properties.map((property) => (
+                  <label key={property.id} className="flex items-center gap-1.5 text-xs text-gray-700">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded border-gray-300 text-[#06C755] focus:ring-[#06C755]"
+                      checked={inviteProperties.includes(property.id)}
+                      onChange={(event) => {
+                        setInviteProperties((current) =>
+                          event.target.checked
+                            ? [...current, property.id]
+                            : current.filter((id) => id !== property.id)
+                        )
+                      }}
+                    />
+                    {property.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           {inviteCode && (
             <div className="mt-3 space-y-2">
               <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
@@ -250,7 +370,32 @@ export function StaffPage(): JSX.Element {
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">
-                    {(member.property_ids ?? []).map((propertyId) => properties.find((property) => property.id === propertyId)?.name ?? propertyId).join(', ') || '未設定'}
+                    {properties.length === 0 ? (
+                      <span className="text-xs text-gray-400">物件未登録</span>
+                    ) : (
+                      <details className="group">
+                        <summary className="cursor-pointer list-none text-sm text-gray-600 group-open:mb-2">
+                          {(member.property_ids ?? []).length > 0
+                            ? (member.property_ids ?? [])
+                                .map((propertyId) => properties.find((property) => property.id === propertyId)?.name ?? propertyId)
+                                .join(', ')
+                            : <span className="text-gray-400">未設定（クリックして選択）</span>}
+                        </summary>
+                        <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-2">
+                          {properties.map((property) => (
+                            <label key={property.id} className="flex items-center gap-1.5 text-xs text-gray-700">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 rounded border-gray-300 text-[#06C755] focus:ring-[#06C755]"
+                                checked={(member.property_ids ?? []).includes(property.id)}
+                                onChange={() => void toggleStaffProperty(member, property.id)}
+                              />
+                              {property.name}
+                            </label>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${member.line_user_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
@@ -260,6 +405,16 @@ export function StaffPage(): JSX.Element {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-2">
+                      {member.line_user_id && (
+                        <button
+                          type="button"
+                          onClick={() => openMessageModalForStaff(member)}
+                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                          title="LINE メッセージを送信"
+                        >
+                          ✉️
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => void deactivateStaff(member)}
@@ -275,6 +430,121 @@ export function StaffPage(): JSX.Element {
           </table>
         </div>
       </div>
+
+      {/* LINE メッセージ送信モーダル */}
+      {messageDraft && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !sendingMessage && setMessageDraft(null)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-6 shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-4 flex items-start justify-between">
+              <h2 className="text-lg font-bold text-gray-900">LINE メッセージ送信</h2>
+              <button
+                type="button"
+                onClick={() => !sendingMessage && setMessageDraft(null)}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="閉じる"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-600">宛先</label>
+                <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="radio"
+                      checked={messageDraft.target.kind === 'all'}
+                      onChange={() => setMessageDraft((d) => d ? { ...d, target: { kind: 'all' } } : d)}
+                    />
+                    <span>全スタッフ（LINE連携済み・有効なもの）</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="radio"
+                      checked={messageDraft.target.kind === 'role'}
+                      onChange={() => setMessageDraft((d) => d ? { ...d, target: { kind: 'role', role: 'cleaner' } } : d)}
+                    />
+                    <span>役割を指定</span>
+                    {messageDraft.target.kind === 'role' && (
+                      <select
+                        className="ml-2 rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                        value={messageDraft.target.role}
+                        onChange={(e) => setMessageDraft((d) => d && d.target.kind === 'role' ? { ...d, target: { kind: 'role', role: e.target.value as Staff['role'] } } : d)}
+                      >
+                        <option value="cleaner">清掃スタッフ</option>
+                        <option value="checkin">チェックイン担当</option>
+                        <option value="manager">マネージャー</option>
+                      </select>
+                    )}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-gray-700">
+                    <input
+                      type="radio"
+                      checked={messageDraft.target.kind === 'individual'}
+                      onChange={() => setMessageDraft((d) => d ? { ...d, target: { kind: 'individual', staff_id: staff.find((m) => m.line_user_id && m.is_active === 1)?.id ?? '' } } : d)}
+                    />
+                    <span>個別に指定</span>
+                    {messageDraft.target.kind === 'individual' && (
+                      <select
+                        className="ml-2 rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm"
+                        value={messageDraft.target.staff_id}
+                        onChange={(e) => setMessageDraft((d) => d && d.target.kind === 'individual' ? { ...d, target: { kind: 'individual', staff_id: e.target.value } } : d)}
+                      >
+                        <option value="">選択してください</option>
+                        {staff.filter((m) => m.line_user_id && m.is_active === 1).map((member) => (
+                          <option key={member.id} value={member.id}>{member.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-gray-600">
+                  メッセージ <span className="text-gray-400">（{messageDraft.text.length} / 5000）</span>
+                </label>
+                <textarea
+                  className={`${inputClassName} min-h-36`}
+                  placeholder="例: 明日は予約が多いので9:30には到着お願いします。"
+                  value={messageDraft.text}
+                  maxLength={5000}
+                  onChange={(e) => setMessageDraft((d) => d ? { ...d, text: e.target.value } : d)}
+                />
+              </div>
+
+              {error && <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => !sendingMessage && setMessageDraft(null)}
+                disabled={sendingMessage}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSendMessage()}
+                disabled={sendingMessage || !messageDraft.text.trim()}
+                className="rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+                style={{ backgroundColor: '#06C755' }}
+              >
+                {sendingMessage ? '送信中...' : '送信する'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -11,13 +11,14 @@ import { multicastText, pushText, pushConfirm, pushButtonLink, formatDateJa } fr
  */
 export async function handleICalSync(env: Env): Promise<void> {
   const properties = await env.DB
-    .prepare('SELECT id, name, airbnb_ical_url, booking_ical_url FROM properties')
-    .all<{ id: string; name: string; airbnb_ical_url: string | null; booking_ical_url: string | null }>()
+    .prepare('SELECT id, name, airbnb_ical_url, booking_ical_url, own_site_ical_url FROM properties')
+    .all<{ id: string; name: string; airbnb_ical_url: string | null; booking_ical_url: string | null; own_site_ical_url: string | null }>()
 
   for (const property of properties.results) {
-    const syncs: Array<{ platform: 'airbnb' | 'booking'; url: string }> = []
+    const syncs: Array<{ platform: 'airbnb' | 'booking' | 'direct'; url: string }> = []
     if (property.airbnb_ical_url) syncs.push({ platform: 'airbnb', url: property.airbnb_ical_url })
     if (property.booking_ical_url) syncs.push({ platform: 'booking', url: property.booking_ical_url })
+    if (property.own_site_ical_url) syncs.push({ platform: 'direct', url: property.own_site_ical_url })
 
     for (const { platform, url } of syncs) {
       try {

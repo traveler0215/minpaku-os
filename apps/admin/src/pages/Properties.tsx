@@ -210,6 +210,11 @@ export function PropertiesPage(): JSX.Element {
                   <input className={inputCls} placeholder="https://ical.booking.com/v1/..." value={form.booking_ical_url ?? ''} onChange={(e) => setForm({ ...form, booking_ical_url: e.target.value })} />
                 </div>
                 <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs font-medium text-gray-600">自社HP iCal URL</label>
+                  <input className={inputCls} placeholder="https://example.com/calendar.ics（Pinpoint Booking 等）" value={form.own_site_ical_url ?? ''} onChange={(e) => setForm({ ...form, own_site_ical_url: e.target.value })} />
+                  <p className="mt-1 text-xs text-gray-400">自社サイトやWordPress予約プラグイン（Pinpoint Booking等）が発行する iCal URL を指定します。「direct」プラットフォームで予約が取り込まれます。</p>
+                </div>
+                <div className="md:col-span-2">
                   <label className="mb-1 block text-xs font-medium text-gray-600">清掃マニュアルURL（PDF/Googleドキュメント等）</label>
                   <input className={inputCls} placeholder="https://docs.google.com/... or https://example.com/manual.pdf" value={(form as Record<string, string>).cleaning_manual_url ?? ''} onChange={(e) => setForm({ ...form, cleaning_manual_url: e.target.value } as typeof form)} />
                   <p className="mt-1 text-xs text-gray-400">LINEでスタッフが「チェックリスト」と送信した時にリンクも表示されます</p>
@@ -360,6 +365,8 @@ export function PropertiesPage(): JSX.Element {
 }
 
 function icalFeedUrl(propertyId: string): string {
-  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  // iCal フィードは Worker ドメインで配信されるので VITE_API_BASE_URL を優先
+  const origin = import.meta.env.VITE_API_BASE_URL
+    ?? (typeof window !== 'undefined' ? window.location.origin : '')
   return `${origin}/ical/${propertyId}.ics`
 }

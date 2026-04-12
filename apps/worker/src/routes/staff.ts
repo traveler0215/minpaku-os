@@ -1,3 +1,4 @@
+import { multicastText, pushText } from '../lib/line'
 import type { ApiResponse, Env, Shift, Staff } from '../types'
 
 interface StaffPatchInput {
@@ -18,6 +19,16 @@ interface InviteInput {
   property_ids?: string[]
 }
 
+interface MessageInput {
+  text?: string
+}
+
+interface BroadcastInput {
+  text?: string
+  role?: Staff['role'] | 'all'
+  staff_ids?: string[]
+}
+
 const INVITE_TTL = 60 * 60 * 24
 
 export async function staffRoutes(request: Request, env: Env): Promise<Response> {
@@ -34,10 +45,21 @@ export async function staffRoutes(request: Request, env: Env): Promise<Response>
     return jsonError('Method Not Allowed', 405)
   }
 
+  if (pathname === '/api/staff/broadcast') {
+    if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
+    return handleBroadcastMessage(request, env)
+  }
+
   if (pathname.endsWith('/shifts') && pathname.startsWith('/api/staff/')) {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
     const staffId = pathname.slice('/api/staff/'.length, -'/shifts'.length)
     return handleGetStaffShifts(env, staffId, searchParams)
+  }
+
+  if (pathname.endsWith('/message') && pathname.startsWith('/api/staff/')) {
+    if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
+    const staffId = pathname.slice('/api/staff/'.length, -'/message'.length)
+    return handleSendStaffMessage(request, env, staffId)
   }
 
   const staffId = getIdFromPath(pathname, '/api/staff/')
@@ -52,6 +74,7 @@ export async function staffRoutes(request: Request, env: Env): Promise<Response>
 
 async function handleListStaff(env: Env, searchParams: URLSearchParams): Promise<Response> {
   const propertyId = searchParams.get('property_id')?.trim()
+  const includeInactive = searchParams.get('include_inactive') === 'true'
   const rows = propertyId
     ? await env.DB
         .prepare(`
@@ -59,6 +82,7 @@ async function handleListStaff(env: Env, searchParams: URLSearchParams): Promise
           FROM staff s
           JOIN staff_properties sp ON sp.staff_id = s.id
           WHERE sp.property_id = ?
+            ${includeInactive ? '' : 'AND s.is_active = 1'}
           ORDER BY s.is_active DESC, s.name ASC
         `)
         .bind(propertyId)
@@ -67,6 +91,7 @@ async function handleListStaff(env: Env, searchParams: URLSearchParams): Promise
         .prepare(`
           SELECT *
           FROM staff
+          ${includeInactive ? '' : 'WHERE is_active = 1'}
           ORDER BY is_active DESC, name ASC
         `)
         .all<Staff>()
@@ -97,9 +122,7 @@ async function handleInviteStaff(request: Request, env: Env): Promise<Response> 
   }
 
   const code = generateInviteCode()
-  const staffId = crypto.randomUUID().replace(/-/g, '').slice(0, 16)
   const invite = {
-    staff_id: staffId,
     name,
     role,
     employment_type: employmentType,
@@ -179,6 +202,95 @@ async function handleDeleteStaff(env: Env, staffId: string): Promise<Response> {
     .run()
 
   return jsonOk({ id: staffId, is_active: 0 })
+}
+
+async function handleSendStaffMessage(request: Request, env: Env, staffId: string): Promise<Response> {
+  const payload = await safeJson<MessageInput>(request)
+  if (!payload) return jsonError('Invalid JSON', 400)
+
+  const text = payload.text?.trim()
+  if (!text) return jsonError('text は必須です', 400)
+  if (text.length > 5000) return jsonError('text は5000文字以内にしてください', 400)
+
+  const staff = await env.DB
+    .prepare('SELECT id, name, line_user_id, is_active FROM staff WHERE id = ?')
+    .bind(staffId)
+    .first<{ id: string; name: string; line_user_id: string; is_active: number }>()
+
+  if (!staff) return jsonError('スタッフが見つかりません', 404)
+  if (!staff.line_user_id) return jsonError('LINE 連携未完了のスタッフには送信できません', 400)
+  if (staff.is_active !== 1) return jsonError('無効化されたスタッフには送信できません', 400)
+
+  try {
+    await pushText(staff.line_user_id, text, env.LINE_STAFF_ACCESS_TOKEN)
+  } catch (err) {
+    console.error('pushText to staff failed', err)
+    return jsonError('LINE 送信に失敗しました', 502)
+  }
+
+  return jsonOk({
+    staff_id: staff.id,
+    staff_name: staff.name,
+    sent_to: 1,
+  })
+}
+
+async function handleBroadcastMessage(request: Request, env: Env): Promise<Response> {
+  const payload = await safeJson<BroadcastInput>(request)
+  if (!payload) return jsonError('Invalid JSON', 400)
+
+  const text = payload.text?.trim()
+  if (!text) return jsonError('text は必須です', 400)
+  if (text.length > 5000) return jsonError('text は5000文字以内にしてください', 400)
+
+  // 宛先の特定: staff_ids > role > all の優先順
+  const staffIds = Array.isArray(payload.staff_ids)
+    ? payload.staff_ids.map((id) => id.trim()).filter(Boolean)
+    : []
+  const role = payload.role
+
+  let query: string
+  let bindings: string[]
+  if (staffIds.length > 0) {
+    const placeholders = staffIds.map(() => '?').join(',')
+    query = `SELECT id, name, line_user_id FROM staff WHERE id IN (${placeholders}) AND is_active = 1 AND line_user_id IS NOT NULL`
+    bindings = staffIds
+  } else if (role && role !== 'all') {
+    query = 'SELECT id, name, line_user_id FROM staff WHERE role = ? AND is_active = 1 AND line_user_id IS NOT NULL'
+    bindings = [role]
+  } else {
+    query = 'SELECT id, name, line_user_id FROM staff WHERE is_active = 1 AND line_user_id IS NOT NULL'
+    bindings = []
+  }
+
+  const rows = await env.DB
+    .prepare(query)
+    .bind(...bindings)
+    .all<{ id: string; name: string; line_user_id: string }>()
+
+  const recipients = rows.results
+  if (recipients.length === 0) {
+    return jsonError('送信対象のスタッフが見つかりません', 404)
+  }
+
+  const lineUserIds = recipients.map((r) => r.line_user_id)
+
+  try {
+    // LINE multicast は1回につき最大500ユーザーまで
+    const chunkSize = 500
+    for (let i = 0; i < lineUserIds.length; i += chunkSize) {
+      const chunk = lineUserIds.slice(i, i + chunkSize)
+      await multicastText(chunk, text, env.LINE_STAFF_ACCESS_TOKEN)
+    }
+  } catch (err) {
+    console.error('multicastText failed', err)
+    return jsonError('LINE 送信に失敗しました', 502)
+  }
+
+  return jsonOk({
+    sent_to: recipients.length,
+    recipients: recipients.map((r) => ({ id: r.id, name: r.name })),
+  })
 }
 
 async function handleGetStaffShifts(env: Env, staffId: string, searchParams: URLSearchParams): Promise<Response> {

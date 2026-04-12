@@ -1,7 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import liff from '@line/liff'
-import { Button } from '../components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { cn } from '../lib/utils'
 
 type PresetKey = 'full' | 'morning' | 'afternoon' | 'custom'
@@ -145,41 +143,43 @@ export function ShiftPickerPage(): JSX.Element {
     }
   }
 
+  const isSubmitting = status === 'initializing' || status === 'submitting'
+
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl items-center px-4 py-6 sm:px-6">
-      <section className="w-full animate-fade-up">
+    <main className="mx-auto min-h-screen max-w-3xl px-4 pt-6 pb-12 sm:px-6">
+      <section className="w-full">
         <div className="mb-5 flex items-center justify-between px-1">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.35em] text-primary/80">LIFF Shift Picker</p>
-            <h1 className="mt-2 text-3xl font-extrabold sm:text-4xl">来週のシフト希望</h1>
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-gray-500">Shift Picker</p>
+            <h1 className="mt-1 text-2xl font-extrabold text-gray-900 sm:text-3xl">来週のシフト希望</h1>
           </div>
-          <div className="rounded-full bg-white/70 px-4 py-2 text-right shadow-soft backdrop-blur">
-            <p className="text-xs text-muted-foreground">対象週</p>
-            <p className="text-sm font-semibold">{formatRange(weekDays[0], weekDays[6])}</p>
+          <div className="rounded-full border border-gray-200 bg-white px-4 py-2 text-right shadow-sm">
+            <p className="text-xs text-gray-500">対象週</p>
+            <p className="text-sm font-semibold text-gray-900">{formatRange(weekDays[0], weekDays[6])}</p>
           </div>
         </div>
 
-        <Card className="overflow-hidden">
-          <CardHeader className="border-b border-white/60 bg-white/55">
-            <CardTitle>希望ありの日だけチェックしてください</CardTitle>
-            <CardDescription>
+        <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+          <div className="border-b border-gray-200 bg-gray-50 p-5">
+            <h2 className="text-lg font-bold text-gray-900">希望ありの日だけチェックしてください</h2>
+            <p className="mt-1 text-sm text-gray-500">
               プリセットで時短入力できます。{selectedCount > 0 ? `${selectedCount}日を選択中です。` : '未選択です。'}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4 p-4 sm:p-6">
+            </p>
+          </div>
+          <div className="space-y-4 p-4 sm:p-6">
             {days.map((day) => (
               <article
                 key={day.date}
                 className={cn(
-                  'rounded-2xl border border-white/60 bg-white/70 p-4 transition',
-                  day.enabled ? 'ring-2 ring-primary/25' : 'opacity-90',
+                  'rounded-xl border p-4 transition',
+                  day.enabled ? 'border-[#06C755] bg-green-50/40 ring-2 ring-[#06C755]/25' : 'border-gray-200 bg-white',
                 )}
               >
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <label className="flex cursor-pointer items-center gap-3">
                     <input
                       type="checkbox"
-                      className="h-5 w-5 rounded border-border text-primary focus:ring-primary"
+                      className="h-5 w-5 rounded border-gray-300 text-[#06C755] focus:ring-[#06C755]"
                       checked={day.enabled}
                       onChange={(event) =>
                         setDays((current) =>
@@ -190,15 +190,15 @@ export function ShiftPickerPage(): JSX.Element {
                       }
                     />
                     <span>
-                      <span className="block text-lg font-bold">
+                      <span className="block text-lg font-bold text-gray-900">
                         {formatDayLabel(day.date)}
                       </span>
-                      <span className="text-sm text-muted-foreground">{day.enabled ? '時間帯を設定できます' : '休みの場合はオフのままでOK'}</span>
+                      <span className="text-sm text-gray-500">{day.enabled ? '時間帯を設定できます' : '休みの場合はオフのままでOK'}</span>
                     </span>
                   </label>
 
                   <select
-                    className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
+                    className="h-11 rounded-lg border border-gray-300 bg-white px-3 text-sm disabled:bg-gray-50 disabled:text-gray-400"
                     value={day.preset}
                     disabled={!day.enabled}
                     onChange={(event) => {
@@ -228,7 +228,7 @@ export function ShiftPickerPage(): JSX.Element {
                 <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
                   <input
                     type="time"
-                    className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
+                    className="h-11 rounded-lg border border-gray-300 bg-white px-3 text-sm disabled:bg-gray-50 disabled:text-gray-400"
                     value={day.from}
                     disabled={!day.enabled}
                     onChange={(event) =>
@@ -237,10 +237,10 @@ export function ShiftPickerPage(): JSX.Element {
                       )
                     }
                   />
-                  <span className="hidden text-center text-sm text-muted-foreground sm:block">〜</span>
+                  <span className="hidden text-center text-sm text-gray-500 sm:block">〜</span>
                   <input
                     type="time"
-                    className="h-11 rounded-xl border border-input bg-background px-3 text-sm"
+                    className="h-11 rounded-lg border border-gray-300 bg-white px-3 text-sm disabled:bg-gray-50 disabled:text-gray-400"
                     value={day.to}
                     disabled={!day.enabled}
                     onChange={(event) =>
@@ -253,15 +253,25 @@ export function ShiftPickerPage(): JSX.Element {
               </article>
             ))}
 
-            <div className="rounded-2xl bg-secondary/70 p-4 text-sm text-secondary-foreground">
-              <p className={cn('font-medium', status === 'error' ? 'text-destructive' : 'text-muted-foreground')}>{message}</p>
+            <div className={cn(
+              'rounded-lg border p-4 text-sm',
+              status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-gray-200 bg-gray-50 text-gray-600',
+            )}>
+              <p className="font-medium">{message}</p>
             </div>
 
-            <Button className="h-12 w-full text-base font-bold" disabled={status === 'initializing' || status === 'submitting'} onClick={() => void handleSubmit()}>
-              {status === 'submitting' ? '送信中...' : '送信する'}
-            </Button>
-          </CardContent>
-        </Card>
+            {/* 送信ボタン（インライン） */}
+            <button
+              type="button"
+              onClick={() => void handleSubmit()}
+              disabled={isSubmitting}
+              className="h-14 w-full rounded-lg text-base font-bold text-white shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              {status === 'submitting' ? '送信中...' : status === 'submitted' ? '送信しました' : `送信する${selectedCount > 0 ? `（${selectedCount}日）` : ''}`}
+            </button>
+          </div>
+        </div>
       </section>
     </main>
   )

@@ -13,6 +13,7 @@ import { SettingsPage } from './pages/Settings'
 import { LoginPage } from './pages/Login'
 import { ShiftPickerPage } from './pages/ShiftPicker'
 import { InvitePage } from './pages/Invite'
+import { SetupPage } from './pages/Setup'
 
 export default function App(): JSX.Element {
   return (
@@ -21,6 +22,7 @@ export default function App(): JSX.Element {
         <Route path="/shift-picker" element={<ShiftPickerPage />} />
         <Route path="/login" element={<LoginPage />} />
         <Route path="/invite/:token" element={<InvitePage />} />
+        <Route path="/setup" element={<SetupPage />} />
         <Route element={<ProtectedRoutes />}>
           <Route element={<AdminShell />}>
             <Route index element={<DashboardPage />} />

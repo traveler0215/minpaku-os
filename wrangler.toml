@@ -5,18 +5,19 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 ENVIRONMENT = "production"
-LIFF_ID = "REPLACE_WITH_YOUR_LIFF_ID"
-AGENT_ENDPOINT = ""
-# ADMIN_JWT_SECRET, LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN are set via wrangler secret
+LIFF_ID = "YOUR_LIFF_ID"                 # ← LINE Developers Console で取得
+AGENT_ENDPOINT = ""                      # 任意: VPS の Claude agent サーバ URL
+# ADMIN_JWT_SECRET, LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN,
+# LINE_STAFF_CHANNEL_SECRET, LINE_STAFF_ACCESS_TOKEN は wrangler secret put で登録
 
 [[d1_databases]]
 binding = "DB"
 database_name = "minpaku-os"
-database_id = "YOUR_D1_DATABASE_ID"
+database_id = "YOUR_D1_DATABASE_ID"      # ← npx wrangler d1 create minpaku-os で発行
 
 [[kv_namespaces]]
 binding = "KV"
-id = "YOUR_KV_NAMESPACE_ID"
+id = "YOUR_KV_NAMESPACE_ID"              # ← npx wrangler kv namespace create KV で発行
 
 [triggers]
 crons = [

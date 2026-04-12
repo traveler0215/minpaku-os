@@ -8,6 +8,7 @@ interface PropertyInput {
   checkout_time?: string
   airbnb_ical_url?: string | null
   booking_ical_url?: string | null
+  own_site_ical_url?: string | null
   lock_adapter?: Property['lock_adapter']
   lock_config_json?: string | null
   annual_day_limit?: number
@@ -74,10 +75,10 @@ async function handleCreateProperty(request: Request, env: Env): Promise<Respons
     .prepare(`
       INSERT INTO properties (
         id, name, address, checkin_time, checkout_time,
-        airbnb_ical_url, booking_ical_url,
+        airbnb_ical_url, booking_ical_url, own_site_ical_url,
         lock_adapter, lock_config_json, annual_day_limit,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `)
     .bind(
       propertyId,
@@ -87,6 +88,7 @@ async function handleCreateProperty(request: Request, env: Env): Promise<Respons
       validated.value.checkout_time,
       validated.value.airbnb_ical_url,
       validated.value.booking_ical_url,
+      validated.value.own_site_ical_url,
       validated.value.lock_adapter,
       validated.value.lock_config_json,
       validated.value.annual_day_limit
@@ -115,7 +117,7 @@ async function handlePatchProperty(request: Request, env: Env, propertyId: strin
     .prepare(`
       UPDATE properties
       SET name = ?, address = ?, checkin_time = ?, checkout_time = ?,
-          airbnb_ical_url = ?, booking_ical_url = ?,
+          airbnb_ical_url = ?, booking_ical_url = ?, own_site_ical_url = ?,
           lock_adapter = ?, lock_config_json = ?, annual_day_limit = ?,
           updated_at = datetime('now')
       WHERE id = ?
@@ -127,6 +129,7 @@ async function handlePatchProperty(request: Request, env: Env, propertyId: strin
       validated.value.checkout_time,
       validated.value.airbnb_ical_url,
       validated.value.booking_ical_url,
+      validated.value.own_site_ical_url,
       validated.value.lock_adapter,
       validated.value.lock_config_json,
       validated.value.annual_day_limit,
@@ -157,18 +160,19 @@ async function handleDeleteProperty(env: Env, propertyId: string): Promise<Respo
 async function handleSyncIcal(env: Env, propertyId: string): Promise<Response> {
   const property = await env.DB
     .prepare(`
-      SELECT id, airbnb_ical_url, booking_ical_url
+      SELECT id, airbnb_ical_url, booking_ical_url, own_site_ical_url
       FROM properties
       WHERE id = ?
     `)
     .bind(propertyId)
-    .first<{ id: string; airbnb_ical_url: string | null; booking_ical_url: string | null }>()
+    .first<{ id: string; airbnb_ical_url: string | null; booking_ical_url: string | null; own_site_ical_url: string | null }>()
 
   if (!property) return jsonError('物件が見つかりません', 404)
 
-  const syncTargets: Array<{ platform: 'airbnb' | 'booking'; url: string }> = []
+  const syncTargets: Array<{ platform: 'airbnb' | 'booking' | 'direct'; url: string }> = []
   if (property.airbnb_ical_url) syncTargets.push({ platform: 'airbnb', url: property.airbnb_ical_url })
   if (property.booking_ical_url) syncTargets.push({ platform: 'booking', url: property.booking_ical_url })
+  if (property.own_site_ical_url) syncTargets.push({ platform: 'direct', url: property.own_site_ical_url })
   if (syncTargets.length === 0) return jsonError('iCal URL が設定されていません', 400)
 
   const results: Array<Record<string, unknown>> = []
@@ -232,6 +236,7 @@ function validatePropertyInput(
     checkout_time: normalizeString(input.checkout_time) ?? existing?.checkout_time ?? '11:00',
     airbnb_ical_url: normalizeNullable(input.airbnb_ical_url, existing?.airbnb_ical_url ?? null),
     booking_ical_url: normalizeNullable(input.booking_ical_url, existing?.booking_ical_url ?? null),
+    own_site_ical_url: normalizeNullable(input.own_site_ical_url, existing?.own_site_ical_url ?? null),
     lock_adapter: input.lock_adapter ?? existing?.lock_adapter ?? 'manual',
     lock_config_json: normalizeNullable(input.lock_config_json, existing?.lock_config_json ?? null),
     annual_day_limit: typeof input.annual_day_limit === 'number' ? input.annual_day_limit : existing?.annual_day_limit ?? 180,

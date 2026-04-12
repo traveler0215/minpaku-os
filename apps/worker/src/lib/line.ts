@@ -168,9 +168,15 @@ async function lineApiPost(
 /**
  * 日付を日本語の読みやすい形式に変換
  * "2026-04-14" → "4月14日(火)"
+ *
+ * 注意: Cloudflare Workers は UTC 環境のため、JST midnight を Date に渡すと
+ * 前日の UTC になって日付がズレる。ここでは文字列から直接 year/month/day を
+ * 取り出し、曜日だけ Date.UTC で計算する（タイムゾーン非依存）。
  */
 export function formatDateJa(dateStr: string): string {
-  const d = new Date(`${dateStr}T00:00:00+09:00`)
+  const [y, m, d] = dateStr.split('-').map(Number)
+  if (!y || !m || !d) return dateStr
+  const weekday = new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay()
   const days = ['日', '月', '火', '水', '木', '金', '土']
-  return `${d.getMonth() + 1}月${d.getDate()}日(${days[d.getDay()]})`
+  return `${m}月${d}日(${days[weekday]})`
 }

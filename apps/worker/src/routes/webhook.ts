@@ -40,7 +40,8 @@ const SHIFT_COLLECTION_WEEK_KEY = 'shift_collection_week_start'
 
 export async function handleLineWebhook(
   request: Request,
-  env: Env
+  env: Env,
+  ctx: ExecutionContext
 ): Promise<Response> {
   if (request.method !== 'POST') {
     return new Response('Method Not Allowed', { status: 405 })
@@ -65,7 +66,15 @@ export async function handleLineWebhook(
     return new Response('Invalid JSON', { status: 400 })
   }
 
-  for (const event of payload.events) {
+  // LINE は webhook 応答が遅いと配信ステータスをエラー扱いする。
+  // 重い処理は ctx.waitUntil に逃がして即 200 を返す。
+  ctx.waitUntil(processEvents(payload.events, env))
+
+  return jsonOk()
+}
+
+async function processEvents(events: LineEvent[], env: Env): Promise<void> {
+  for (const event of events) {
     try {
       console.log('LINE event:', JSON.stringify({ type: event.type, userId: event.source?.userId }))
       await handleEvent(event, env)
@@ -80,8 +89,6 @@ export async function handleLineWebhook(
       }
     }
   }
-
-  return jsonOk()
 }
 
 async function handleEvent(event: LineEvent, env: Env): Promise<void> {
@@ -127,7 +134,9 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
   const staff = await findStaffByLineUserId(env, userId)
 
   if (!staff) {
+    console.log('Staff not found, trying invite:', { userId, text })
     const registered = await tryRegisterStaffFromInvite(env, userId, text)
+    console.log('Invite result:', registered)
     if (registered) {
       await replyText(
         event.replyToken!,

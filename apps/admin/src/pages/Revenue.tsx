@@ -64,6 +64,8 @@ const categoryBadgeClass: Record<CostCategory, string> = {
   other: 'bg-gray-100 text-gray-600',
 }
 
+const AGENT_ENABLED = import.meta.env.VITE_AGENT_ENABLED === 'true'
+
 export function RevenuePage(): JSX.Element {
   const { token } = useAuth()
   const [activeTab, setActiveTab] = useState<RevenueTab>('revenue')
@@ -369,15 +371,21 @@ export function RevenuePage(): JSX.Element {
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={() => void handleImport()}
-                disabled={!extractedText || step === 'importing'}
-                className="w-full rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
-                style={{ backgroundColor: '#06C755' }}
-              >
-                {step === 'importing' ? 'AI解析・インポート中...' : 'インポート実行'}
-              </button>
+              {AGENT_ENABLED ? (
+                <button
+                  type="button"
+                  onClick={() => void handleImport()}
+                  disabled={!extractedText || step === 'importing'}
+                  className="w-full rounded-lg px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-40"
+                  style={{ backgroundColor: '#06C755' }}
+                >
+                  {step === 'importing' ? 'AI解析・インポート中...' : 'インポート実行'}
+                </button>
+              ) : (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-700">
+                  AI取り込み機能は現在無効です。手動でコスト・売上を追加してください。
+                </div>
+              )}
             </div>
           </div>
         </div>

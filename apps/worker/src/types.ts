@@ -27,6 +27,7 @@ export interface Property {
   checkout_time: string
   airbnb_ical_url: string | null
   booking_ical_url: string | null
+  own_site_ical_url: string | null
   lock_adapter: 'manual' | 'remotelock' | 'sesame' | 'alfa'
   lock_config_json: string | null
   annual_day_limit: number

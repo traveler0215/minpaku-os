@@ -21,7 +21,7 @@ export default {
   /**
    * HTTP リクエストハンドラー
    */
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
     const { pathname } = url
 
@@ -32,7 +32,7 @@ export default {
 
     // LINE Webhook（認証不要 / LINE署名検証）
     if (pathname === '/webhook/line') {
-      return handleLineWebhook(request, env)
+      return handleLineWebhook(request, env, ctx)
     }
 
     if (pathname.startsWith('/ical/')) {
