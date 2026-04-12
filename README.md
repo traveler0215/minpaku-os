@@ -3,7 +3,17 @@
 LINE × Cloudflare で動く、民泊オーナー向けオープンソース PMS（Property Management System）。
 **月額0円のインフラで、商用 PMS（月1〜3万円）と同じことを実現します。**
 
-> 📘 **ビジュアル付きセットアップガイド**: デプロイ後、`https://<あなたの admin URL>/setup` でステップ別の手順を確認できます。
+## 🚀 クイックスタート（ワンコマンド）
+
+```bash
+npx create-minpaku-os@latest
+```
+
+対話型ウィザードが **クローン → Cloudflare リソース作成 → マイグレーション → シークレット登録 → デプロイ** まで自動で実行します（所要 5〜10分）。
+
+事前に LINE Developers Console でチャネルを2つ作成しておくだけで OK です（詳細は [セットアップガイド](https://minpaku-os-admin.pages.dev/setup)）。
+
+> 📘 **手動でセットアップする場合**: `https://<あなたの admin URL>/setup` で8ステップの詳細手順を確認できます。
 
 ## 特徴
 
