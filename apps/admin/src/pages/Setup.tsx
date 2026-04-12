@@ -117,13 +117,23 @@ export function SetupPage(): JSX.Element {
           予約管理・スタッフ管理・収益管理を全部 LINE と管理画面で。
           月額 0 円のインフラで、商用 PMS（月額1〜3万円）と同じことを実現します。
         </p>
+
+        {/* ワンコマンド CTA */}
+        <div className="mx-auto mt-8 max-w-xl">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-gray-500">ワンコマンドでセットアップ</p>
+          <CommandBlock command="npx create-minpaku-os@latest" />
+          <p className="mt-2 text-xs text-gray-500">
+            対話型ウィザードが クローン → Cloudflare 設定 → デプロイ まで自動実行します（所要5〜10分）
+          </p>
+        </div>
+
         <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
           <a
             href="#setup"
             className="rounded-lg px-6 py-3 text-sm font-bold text-white shadow-sm hover:opacity-90"
             style={{ backgroundColor: ACCENT }}
           >
-            セットアップを始める →
+            手動セットアップの手順を見る ↓
           </a>
           <a
             href={REPO_URL}
