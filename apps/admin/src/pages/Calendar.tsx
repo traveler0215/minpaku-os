@@ -16,6 +16,18 @@ const PLATFORM_COLORS: Record<Reservation['platform'], string> = {
   other: '#7c6f64',
 }
 
+function eventColor(reservation: Reservation): string {
+  if (reservation.status === 'blocked') return '#9ca3af'     // グレー
+  if (reservation.status === 'cancelled') return '#d1d5db'   // 薄いグレー
+  return PLATFORM_COLORS[reservation.platform]
+}
+
+function eventTitle(reservation: Reservation, propertyName: string): string {
+  if (reservation.status === 'blocked') return `🔒 ${propertyName} / ブロック`
+  if (reservation.status === 'cancelled') return `✕ ${propertyName} / キャンセル`
+  return `${propertyName} / ${reservation.guest_name ?? 'ゲスト未設定'}`
+}
+
 export function CalendarPage(): JSX.Element {
   const { token } = useAuth()
   const [properties, setProperties] = useState<Property[]>([])
@@ -67,13 +79,16 @@ export function CalendarPage(): JSX.Element {
             initialDate={`${currentMonth}-01`}
             height="auto"
             locale={jaLocale}
-            events={reservations.map((reservation) => ({
-              id: reservation.id,
-              title: `${propertyName(properties, reservation.property_id)} / ${reservation.guest_name ?? 'ゲスト未設定'}`,
-              start: reservation.checkin_date,
-              end: reservation.checkout_date,
-              color: PLATFORM_COLORS[reservation.platform],
-            }))}
+            events={reservations
+              .filter((r) => r.status !== 'cancelled')
+              .map((reservation) => ({
+                id: reservation.id,
+                title: eventTitle(reservation, propertyName(properties, reservation.property_id)),
+                start: reservation.checkin_date,
+                end: reservation.checkout_date,
+                color: eventColor(reservation),
+                ...(reservation.status === 'blocked' ? { display: 'background' } : {}),
+              }))}
             datesSet={(arg: DatesSetArg) => {
               // currentStartは表示開始日（前月末の場合あり）なので、中間日で月を判定
               const mid = new Date((arg.start.getTime() + arg.end.getTime()) / 2)

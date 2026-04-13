@@ -23,6 +23,33 @@ export function SettingsPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [inviteUrl, setInviteUrl] = useState<string | null>(null)
+  const [hideGuestName, setHideGuestName] = useState(false)
+  const [showPlatform, setShowPlatform] = useState(false)
+
+  useEffect(() => {
+    if (!token) return
+    apiFetch<{ hide_guest_name: boolean; show_platform: boolean }>('/api/settings/line', undefined, token)
+      .then((data) => {
+        setHideGuestName(data.hide_guest_name)
+        setShowPlatform(data.show_platform)
+      })
+      .catch(() => {})
+  }, [token])
+
+  async function updateLineSetting(key: 'hide_guest_name' | 'show_platform', value: boolean): Promise<void> {
+    if (!token) return
+    try {
+      const res = await apiFetch<{ hide_guest_name: boolean; show_platform: boolean }>('/api/settings/line', {
+        method: 'PATCH',
+        body: JSON.stringify({ [key]: value }),
+      }, token)
+      setHideGuestName(res.hide_guest_name)
+      setShowPlatform(res.show_platform)
+      setMessage('LINE表示設定を更新しました')
+    } catch {
+      setError('設定の更新に失敗しました')
+    }
+  }
 
   const sortedAdminUsers = useMemo(
     () => [...adminUsers].sort((a, b) => Number(b.is_active) - Number(a.is_active) || a.email.localeCompare(b.email)),
@@ -132,6 +159,44 @@ export function SettingsPage(): JSX.Element {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">設定</h1>
         <p className="mt-1 text-sm text-gray-500">管理ユーザー情報とシステム設定の状態を確認します</p>
+      </div>
+
+      {/* LINE 設定 */}
+      <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h2 className="text-sm font-semibold text-gray-900">LINE 表示設定</h2>
+          <p className="text-xs text-gray-500">スタッフが LINE で「予約」コマンドを使った時の表示を制御します</p>
+        </div>
+        <div className="p-5">
+          <div className="space-y-3">
+            <label className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-gray-900">ゲスト名を非表示にする</p>
+                <p className="mt-0.5 text-xs text-gray-500">ONにすると、予約一覧で物件名のみ表示されます</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void updateLineSetting('hide_guest_name', !hideGuestName)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${hideGuestName ? 'bg-[#06C755]' : 'bg-gray-300'}`}
+              >
+                <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${hideGuestName ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </label>
+            <label className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-gray-900">プラットフォームを表示する</p>
+                <p className="mt-0.5 text-xs text-gray-500">ONにすると、予約の末尾に (airbnb) (direct) 等を表示します</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void updateLineSetting('show_platform', !showPlatform)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${showPlatform ? 'bg-[#06C755]' : 'bg-gray-300'}`}
+              >
+                <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${showPlatform ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </label>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-5 xl:grid-cols-2">

@@ -1,4 +1,12 @@
-import { multicastText, pushText } from '../lib/line'
+import {
+  multicastText,
+  pushText,
+  createRichMenu,
+  uploadRichMenuImage,
+  linkRichMenuToUser,
+  unlinkRichMenuFromUser,
+  setDefaultRichMenu,
+} from '../lib/line'
 import type { ApiResponse, Env, Shift, Staff } from '../types'
 
 interface StaffPatchInput {
@@ -43,6 +51,11 @@ export async function staffRoutes(request: Request, env: Env): Promise<Response>
   if (pathname === '/api/staff/invite') {
     if (request.method === 'POST') return handleInviteStaff(request, env)
     return jsonError('Method Not Allowed', 405)
+  }
+
+  if (pathname === '/api/staff/setup-richmenu') {
+    if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
+    return handleSetupRichMenu(env)
   }
 
   if (pathname === '/api/staff/broadcast') {
@@ -170,6 +183,26 @@ async function handlePatchStaff(request: Request, env: Env, staffId: string): Pr
     .bind(name, role, employmentType, hourlyWage, wageType, isActive, staffId)
     .run()
 
+  // リッチメニューの差し替え（roleが変更された場合）
+  if (payload.role !== undefined && payload.role !== existing.role) {
+    const staffRow = await env.DB.prepare('SELECT line_user_id FROM staff WHERE id = ?').bind(staffId).first<{ line_user_id: string | null }>()
+    if (staffRow?.line_user_id) {
+      const richMenuId = await env.KV.get(`richmenu:${payload.role}`)
+      if (richMenuId) {
+        try {
+          await unlinkRichMenuFromUser(staffRow.line_user_id, env.LINE_STAFF_ACCESS_TOKEN)
+        } catch (err) {
+          console.error('Failed to unlink rich menu', err)
+        }
+        try {
+          await linkRichMenuToUser(staffRow.line_user_id, richMenuId, env.LINE_STAFF_ACCESS_TOKEN)
+        } catch (err) {
+          console.error('Failed to link rich menu', err)
+        }
+      }
+    }
+  }
+
   if (payload.property_ids) {
     const propertyIds = payload.property_ids.map((id) => id.trim()).filter(Boolean)
     await env.DB.prepare('DELETE FROM staff_properties WHERE staff_id = ?').bind(staffId).run()
@@ -189,8 +222,17 @@ async function handlePatchStaff(request: Request, env: Env, staffId: string): Pr
 }
 
 async function handleDeleteStaff(env: Env, staffId: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT id FROM staff WHERE id = ?').bind(staffId).first<{ id: string }>()
+  const existing = await env.DB.prepare('SELECT id, line_user_id FROM staff WHERE id = ?').bind(staffId).first<{ id: string; line_user_id: string | null }>()
   if (!existing) return jsonError('スタッフが見つかりません', 404)
+
+  // リッチメニュー解除
+  if (existing.line_user_id) {
+    try {
+      await unlinkRichMenuFromUser(existing.line_user_id, env.LINE_STAFF_ACCESS_TOKEN)
+    } catch (err) {
+      console.error('Failed to unlink rich menu on delete', err)
+    }
+  }
 
   await env.DB
     .prepare(`
@@ -290,6 +332,178 @@ async function handleBroadcastMessage(request: Request, env: Env): Promise<Respo
   return jsonOk({
     sent_to: recipients.length,
     recipients: recipients.map((r) => ({ id: r.id, name: r.name })),
+  })
+}
+
+// ─── Rich Menu セットアップ ─────────────────────────────
+
+const RICHMENU_IMAGE_BASE = 'https://minpaku-os-admin.pages.dev/richmenu'
+
+function buildManagerRichMenu(adminUrl: string) {
+  return {
+    size: { width: 2500, height: 1686 },
+    selected: true,
+    name: 'minpaku-os-manager',
+    chatBarText: 'メニュー',
+    areas: [
+      {
+        bounds: { x: 0, y: 0, width: 833, height: 843 },
+        action: { type: 'uri', uri: adminUrl },
+      },
+      {
+        bounds: { x: 833, y: 0, width: 834, height: 843 },
+        action: { type: 'message', text: '予約' },
+      },
+      {
+        bounds: { x: 1667, y: 0, width: 833, height: 843 },
+        action: { type: 'message', text: '今日のシフト' },
+      },
+      {
+        bounds: { x: 0, y: 843, width: 833, height: 843 },
+        action: { type: 'message', text: 'チェックリスト' },
+      },
+      {
+        bounds: { x: 833, y: 843, width: 834, height: 843 },
+        action: { type: 'message', text: '完了' },
+      },
+      {
+        bounds: { x: 1667, y: 843, width: 833, height: 843 },
+        action: { type: 'message', text: 'ヘルプ' },
+      },
+    ],
+  }
+}
+
+function buildCleanerRichMenu() {
+  return {
+    size: { width: 2500, height: 1686 },
+    selected: true,
+    name: 'minpaku-os-cleaner',
+    chatBarText: 'メニュー',
+    areas: [
+      {
+        bounds: { x: 0, y: 0, width: 1250, height: 843 },
+        action: { type: 'message', text: '今日のシフト' },
+      },
+      {
+        bounds: { x: 1250, y: 0, width: 1250, height: 843 },
+        action: { type: 'message', text: 'チェックリスト' },
+      },
+      {
+        bounds: { x: 0, y: 843, width: 1250, height: 843 },
+        action: { type: 'message', text: '完了' },
+      },
+      {
+        bounds: { x: 1250, y: 843, width: 1250, height: 843 },
+        action: { type: 'message', text: 'ヘルプ' },
+      },
+    ],
+  }
+}
+
+function buildCheckinRichMenu() {
+  return {
+    size: { width: 2500, height: 1686 },
+    selected: true,
+    name: 'minpaku-os-checkin',
+    chatBarText: 'メニュー',
+    areas: [
+      {
+        bounds: { x: 0, y: 0, width: 1250, height: 843 },
+        action: { type: 'message', text: '今日のシフト' },
+      },
+      {
+        bounds: { x: 1250, y: 0, width: 1250, height: 843 },
+        action: { type: 'message', text: '予約' },
+      },
+      {
+        bounds: { x: 0, y: 843, width: 1250, height: 843 },
+        action: { type: 'message', text: '完了' },
+      },
+      {
+        bounds: { x: 1250, y: 843, width: 1250, height: 843 },
+        action: { type: 'message', text: 'ヘルプ' },
+      },
+    ],
+  }
+}
+
+async function handleSetupRichMenu(env: Env): Promise<Response> {
+  const adminUrl = env.ADMIN_URL ?? 'https://minpaku-os-admin.pages.dev'
+  const accessToken = env.LINE_STAFF_ACCESS_TOKEN
+
+  const roles = ['manager', 'cleaner', 'checkin'] as const
+  const results: Record<string, string> = {}
+  const errors: string[] = []
+
+  for (const role of roles) {
+    // 冪等: 既に KV に保存済みならスキップ
+    const existingId = await env.KV.get(`richmenu:${role}`)
+    if (existingId) {
+      results[role] = existingId
+      continue
+    }
+
+    try {
+      // 1. リッチメニュー定義を作成
+      const menuDef =
+        role === 'manager' ? buildManagerRichMenu(adminUrl)
+        : role === 'cleaner' ? buildCleanerRichMenu()
+        : buildCheckinRichMenu()
+
+      const richMenuId = await createRichMenu(menuDef, accessToken)
+
+      // 2. 画像をアップロード
+      const imageUrl = `${RICHMENU_IMAGE_BASE}/richmenu_${role}.png`
+      const imageRes = await fetch(imageUrl)
+      if (!imageRes.ok) {
+        throw new Error(`Failed to fetch image from ${imageUrl}: ${imageRes.status}`)
+      }
+      const imageBuffer = await imageRes.arrayBuffer()
+      await uploadRichMenuImage(richMenuId, imageBuffer, accessToken)
+
+      // 3. KV に保存
+      await env.KV.put(`richmenu:${role}`, richMenuId)
+      results[role] = richMenuId
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      errors.push(`${role}: ${msg}`)
+      console.error(`Failed to setup rich menu for ${role}`, err)
+    }
+  }
+
+  // cleaner をデフォルトに設定
+  if (results.cleaner) {
+    try {
+      await setDefaultRichMenu(results.cleaner, accessToken)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      errors.push(`default: ${msg}`)
+      console.error('Failed to set default rich menu', err)
+    }
+  }
+
+  // 既存スタッフにリッチメニューをリンク
+  const allStaff = await env.DB
+    .prepare('SELECT id, line_user_id, role FROM staff WHERE is_active = 1 AND line_user_id IS NOT NULL')
+    .all<{ id: string; line_user_id: string; role: Staff['role'] }>()
+
+  let linked = 0
+  for (const s of allStaff.results) {
+    const menuId = results[s.role]
+    if (!menuId || !s.line_user_id) continue
+    try {
+      await linkRichMenuToUser(s.line_user_id, menuId, accessToken)
+      linked++
+    } catch (err) {
+      console.error(`Failed to link rich menu to staff ${s.id}`, err)
+    }
+  }
+
+  return jsonOk({
+    richMenuIds: results,
+    linked_staff: linked,
+    errors: errors.length > 0 ? errors : undefined,
   })
 }
 

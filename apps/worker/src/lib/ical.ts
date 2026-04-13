@@ -105,13 +105,18 @@ export function icalEventToReservation(
   propertyId: string,
   platform: Reservation['platform']
 ): Omit<Reservation, 'id' | 'created_at' | 'updated_at'> {
+  const upperSummary = event.summary.toUpperCase()
   const isCancelled =
     event.status === 'CANCELLED' ||
-    event.summary.toUpperCase().includes('CANCELLED')
+    upperSummary.includes('CANCELLED')
   const isBlocked =
-    event.summary.toUpperCase() === 'CLOSED' ||
-    event.summary.toUpperCase().includes('BLOCKED') ||
-    event.summary.toUpperCase().includes('NOT AVAILABLE')
+    upperSummary === 'CLOSED' ||
+    upperSummary.includes('BLOCKED') ||
+    upperSummary.includes('NOT AVAILABLE') ||
+    // Airbnb の「当日予約不可」「準備時間」等のルールでブロックされた日は
+    // SUMMARY:Reserved だが DESCRIPTION が空。実際のゲスト予約は
+    // SUMMARY:Airbnb (HMXXXXXX) か DESCRIPTION にゲスト情報が入る。
+    (upperSummary === 'RESERVED' && !event.description)
 
   return {
     property_id: propertyId,

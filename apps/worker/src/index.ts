@@ -69,6 +69,32 @@ export default {
       if (pathname.startsWith('/api/admin-users'))  return withCors(await adminUserRoutes(request, env))
       if (pathname.startsWith('/api/labor-costs'))  return withCors(await laborRoutes(request, env))
 
+      // LINE 設定 API（KV ベース）
+      if (pathname === '/api/settings/line') {
+        if (request.method === 'GET') {
+          const hideGuestName = await env.KV.get('config:hide_guest_name') === 'true'
+          const showPlatform = await env.KV.get('config:show_platform') === 'true'
+          return withCors(new Response(JSON.stringify({ success: true, data: { hide_guest_name: hideGuestName, show_platform: showPlatform } }), {
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+        if (request.method === 'PATCH') {
+          const body = await request.json() as { hide_guest_name?: boolean; show_platform?: boolean }
+          for (const [key, kvKey] of [['hide_guest_name', 'config:hide_guest_name'], ['show_platform', 'config:show_platform']] as const) {
+            const val = body[key]
+            if (val !== undefined) {
+              if (val) await env.KV.put(kvKey, 'true')
+              else await env.KV.delete(kvKey)
+            }
+          }
+          const hideGuestName = await env.KV.get('config:hide_guest_name') === 'true'
+          const showPlatform = await env.KV.get('config:show_platform') === 'true'
+          return withCors(new Response(JSON.stringify({ success: true, data: { hide_guest_name: hideGuestName, show_platform: showPlatform } }), {
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+      }
+
       return withCors(new Response('Not Found', { status: 404 }))
     }
 

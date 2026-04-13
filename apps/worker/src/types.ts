@@ -14,6 +14,7 @@ export interface Env {
   ADMIN_JWT_SECRET: string           // 管理画面JWTシークレット
   LIFF_ID: string
   AGENT_ENDPOINT: string
+  ADMIN_URL?: string                    // 管理画面URL（Pages）
   CLOUDFLARE_TURNSTILE_SECRET?: string  // Turnstile（ボット対策、任意）
 }
 

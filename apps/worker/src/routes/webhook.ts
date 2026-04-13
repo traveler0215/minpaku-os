@@ -1,5 +1,6 @@
 import {
   formatDateJa,
+  linkRichMenuToUser,
   parsePostbackData,
   pushConfirm,
   pushText,
@@ -217,40 +218,67 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
     const today = new Date().toISOString().slice(0, 10)
     const upcoming = await env.DB
       .prepare(`
-        SELECT r.guest_name, r.checkin_date, r.checkout_date, r.platform, p.name as property_name
+        SELECT r.guest_name, r.checkin_date, r.checkout_date, r.platform, r.status, p.name as property_name
         FROM reservations r
         LEFT JOIN properties p ON r.property_id = p.id
         WHERE r.checkout_date >= ? AND r.status IN ('confirmed', 'completed')
         ORDER BY r.checkin_date ASC
-        LIMIT 10
+        LIMIT 30
       `)
       .bind(today)
-      .all<{ guest_name: string | null; checkin_date: string; checkout_date: string; platform: string; property_name: string | null }>()
+      .all<{ guest_name: string | null; checkin_date: string; checkout_date: string; platform: string; status: string; property_name: string | null }>()
 
-    if (upcoming.results.length === 0) {
+    // 表示設定（管理画面のLINE設定で変更可能）
+    const hideGuestName = await env.KV.get('config:hide_guest_name') === 'true'
+    const showPlatform = await env.KV.get('config:show_platform') === 'true'
+
+    // ゲスト名がある予約のみ表示、ゲスト未設定（iCal ブロック等）は件数だけ
+    const named = upcoming.results.filter((r) => r.guest_name && r.guest_name !== 'ゲスト未設定')
+    const unnamed = upcoming.results.filter((r) => !r.guest_name || r.guest_name === 'ゲスト未設定')
+
+    if (named.length === 0 && unnamed.length === 0) {
       await replyText(event.replyToken!, '今後の予約はありません。', env.LINE_STAFF_ACCESS_TOKEN)
     } else {
-      const lines = upcoming.results.map((r, i) =>
-        `${i + 1}. ${r.checkin_date}→${r.checkout_date}\n   ${r.property_name ?? '不明'} / ${r.guest_name ?? 'ゲスト未設定'} (${r.platform})`
-      )
-      await replyText(event.replyToken!, `📋 今後の予約:\n\n${lines.join('\n\n')}`, env.LINE_STAFF_ACCESS_TOKEN)
+      const lines = named.slice(0, 10).map((r, i) => {
+        const guestPart = hideGuestName ? '' : ` / ${r.guest_name}`
+        const platformPart = showPlatform ? ` (${r.platform})` : ''
+        return `${i + 1}. ${r.checkin_date}→${r.checkout_date}\n   ${r.property_name ?? '不明'}${guestPart}${platformPart}`
+      })
+      const footer = unnamed.length > 0
+        ? `\n\n※ 他にゲスト名未設定の予約が ${unnamed.length} 件あります`
+        : ''
+      const msg = named.length > 0
+        ? `📋 今後の予約:\n\n${lines.join('\n\n')}${footer}`
+        : `📋 今後の予約:\n\nゲスト名が確定している予約はありません。\n※ ゲスト名未設定の予約が ${unnamed.length} 件あります（管理画面で確認できます）`
+      await replyText(event.replyToken!, msg, env.LINE_STAFF_ACCESS_TOKEN)
     }
     return
   }
 
   if (text === '管理画面' || text === 'admin') {
-    await replyText(
-      event.replyToken!,
-      `🔗 管理画面:\n${env.ADMIN_URL ?? 'https://your-admin.pages.dev'}`,
-      env.LINE_STAFF_ACCESS_TOKEN
-    )
+    if (staff.role === 'manager') {
+      await replyText(
+        event.replyToken!,
+        `🔗 管理画面:\n${env.ADMIN_URL ?? 'https://your-admin.pages.dev'}`,
+        env.LINE_STAFF_ACCESS_TOKEN
+      )
+    } else {
+      await replyText(
+        event.replyToken!,
+        '管理画面へのアクセスはマネージャー権限が必要です。',
+        env.LINE_STAFF_ACCESS_TOKEN
+      )
+    }
     return
   }
 
   if (text === 'ヘルプ' || text === 'help' || text === '？') {
+    const managerCommands = staff.role === 'manager'
+      ? '\n• 管理画面 → Web管理画面のURL\n• 予約 → 今後の予約一覧'
+      : ''
     await replyText(
       event.replyToken!,
-      `📖 コマンド一覧:\n\n• 予約 → 今後の予約一覧\n• チェックリスト → 清掃チェックリスト表示\n• 今日のシフト → 本日のシフト確認\n• 管理画面 → Web管理画面のURL\n• OK → シフト承諾\n• NG → シフト辞退\n• 完了 → タスク完了報告\n• ヘルプ → このメッセージ`,
+      `📖 コマンド一覧:\n\n• チェックリスト → 清掃チェックリスト表示\n• 今日のシフト → 本日のシフト確認${managerCommands}\n• OK → シフト承諾\n• NG → シフト辞退\n• 完了 → タスク完了報告\n• ヘルプ → このメッセージ`,
       env.LINE_STAFF_ACCESS_TOKEN
     )
     return
@@ -378,15 +406,34 @@ async function tryRegisterStaffFromInvite(
       .bind(lineUserId, name, role, employmentType, hourlyWage, staffId)
       .run()
   } else {
-    const result = await env.DB
-      .prepare(`
-        INSERT INTO staff (line_user_id, name, role, employment_type, hourly_wage, invited_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'))
-        RETURNING id
-      `)
-      .bind(lineUserId, name, role, employmentType, hourlyWage)
+    // 同じ line_user_id で無効化済みのスタッフがいれば再有効化する
+    const deactivated = await env.DB
+      .prepare('SELECT id FROM staff WHERE line_user_id = ? AND is_active = 0')
+      .bind(lineUserId)
       .first<{ id: string }>()
-    staffId = result?.id ?? ''
+
+    if (deactivated) {
+      staffId = deactivated.id
+      await env.DB
+        .prepare(`
+          UPDATE staff
+          SET name = ?, role = ?, employment_type = ?, hourly_wage = ?,
+              is_active = 1, invited_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ?
+        `)
+        .bind(name, role, employmentType, hourlyWage, staffId)
+        .run()
+    } else {
+      const result = await env.DB
+        .prepare(`
+          INSERT INTO staff (line_user_id, name, role, employment_type, hourly_wage, invited_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
+          RETURNING id
+        `)
+        .bind(lineUserId, name, role, employmentType, hourlyWage)
+        .first<{ id: string }>()
+      staffId = result?.id ?? ''
+    }
   }
 
   if (!staffId) {
@@ -404,6 +451,16 @@ async function tryRegisterStaffFromInvite(
 
   await deleteInvitePayload(env, code)
   await env.KV.delete(invitePendingKey(lineUserId))
+
+  // リッチメニューをリンク
+  const richMenuId = await env.KV.get(`richmenu:${role}`)
+  if (richMenuId && lineUserId) {
+    try {
+      await linkRichMenuToUser(lineUserId, richMenuId, env.LINE_STAFF_ACCESS_TOKEN)
+    } catch (err) {
+      console.error('Failed to link rich menu', err)
+    }
+  }
 
   return { id: staffId, name }
 }

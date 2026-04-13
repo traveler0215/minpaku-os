@@ -143,6 +143,114 @@ export function parsePostbackData(data: string): Record<string, string> {
   return Object.fromEntries(new URLSearchParams(data))
 }
 
+// ─── Rich Menu API ──────────────────────────────────────
+
+/**
+ * リッチメニューを作成し richMenuId を返す
+ */
+export async function createRichMenu(
+  menu: Record<string, unknown>,
+  accessToken: string
+): Promise<string> {
+  const res = await fetch(`${LINE_API}/richmenu`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(menu),
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LINE API createRichMenu error [${res.status}]: ${err}`)
+  }
+  const data = (await res.json()) as { richMenuId: string }
+  return data.richMenuId
+}
+
+/**
+ * リッチメニューに画像をアップロード
+ */
+export async function uploadRichMenuImage(
+  richMenuId: string,
+  imageBuffer: ArrayBuffer,
+  accessToken: string
+): Promise<void> {
+  const res = await fetch(
+    `https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'image/png',
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: imageBuffer,
+    }
+  )
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LINE API uploadRichMenuImage error [${res.status}]: ${err}`)
+  }
+}
+
+/**
+ * ユーザーにリッチメニューをリンク
+ */
+export async function linkRichMenuToUser(
+  userId: string,
+  richMenuId: string,
+  accessToken: string
+): Promise<void> {
+  const res = await fetch(`${LINE_API}/user/${userId}/richmenu/${richMenuId}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LINE API linkRichMenuToUser error [${res.status}]: ${err}`)
+  }
+}
+
+/**
+ * ユーザーからリッチメニューを解除
+ */
+export async function unlinkRichMenuFromUser(
+  userId: string,
+  accessToken: string
+): Promise<void> {
+  const res = await fetch(`${LINE_API}/user/${userId}/richmenu`, {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LINE API unlinkRichMenuFromUser error [${res.status}]: ${err}`)
+  }
+}
+
+/**
+ * デフォルトリッチメニューを設定
+ */
+export async function setDefaultRichMenu(
+  richMenuId: string,
+  accessToken: string
+): Promise<void> {
+  const res = await fetch(`${LINE_API}/user/all/richmenu/${richMenuId}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`LINE API setDefaultRichMenu error [${res.status}]: ${err}`)
+  }
+}
+
 /**
  * LINE API への POST リクエスト共通処理
  */
