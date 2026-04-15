@@ -160,6 +160,9 @@ export async function syncPropertyIcal(
   const events = await fetchIcal(icalUrl)
   let added = 0, updated = 0, cancelled = 0
 
+  // フィード内の全UIDを収集（消滅検知用）
+  const feedUids = new Set(events.map((e) => e.uid))
+
   for (const event of events) {
     const reservation = icalEventToReservation(event, propertyId, platform)
     const existing = await db
@@ -212,6 +215,38 @@ export async function syncPropertyIcal(
         .run()
       if (reservation.status === 'cancelled') cancelled++
       else updated++
+    }
+  }
+
+  // フィードから消えた予約をキャンセル
+  // 対象: iCal同期で作られた予約（external_idあり）、同じ物件・プラットフォーム、
+  //       未来のチェックアウト日、まだキャンセル/ブロックされていないもの
+  const today = new Date().toLocaleDateString('ja-JP', {
+    timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).replace(/\//g, '-')
+
+  const dbReservations = await db
+    .prepare(`
+      SELECT id, external_id FROM reservations
+      WHERE property_id = ? AND platform = ?
+        AND external_id IS NOT NULL
+        AND status NOT IN ('cancelled', 'blocked')
+        AND checkout_date >= ?
+    `)
+    .bind(propertyId, platform, today)
+    .all<{ id: string; external_id: string }>()
+
+  for (const row of dbReservations.results) {
+    if (!feedUids.has(row.external_id)) {
+      await db
+        .prepare(`
+          UPDATE reservations
+          SET status = 'cancelled', updated_at = datetime('now')
+          WHERE id = ?
+        `)
+        .bind(row.id)
+        .run()
+      cancelled++
     }
   }
 
