@@ -148,6 +148,13 @@ export async function handleDailyReport(env: Env): Promise<void> {
     env.DB.prepare(`SELECT COUNT(*) AS count FROM shifts WHERE status NOT IN ('completed', 'cancelled')`).first<{ count: number }>(),
   ])
 
+  // チェックイン・チェックアウトが全て0件の場合、設定に応じてスキップ
+  const hasActivity = todayCheckins > 0 || todayCheckouts > 0 || tomorrowCheckins > 0 || (incompleteShifts?.count ?? 0) > 0
+  if (!hasActivity) {
+    const notifyNoActivity = await env.KV.get('config:notify_no_activity')
+    if (notifyNoActivity === 'false') return
+  }
+
   const warnings = await getAnnualDayWarnings(env)
   const warningText = warnings.length > 0
     ? `\n\n【180日カウント警告】\n${warnings.map((row) => `⚠️ ${row.property_name}: ${row.days_used}/${row.annual_day_limit}日（残り${row.annual_day_limit - row.days_used}日）`).join('\n')}`

@@ -25,27 +25,30 @@ export function SettingsPage(): JSX.Element {
   const [inviteUrl, setInviteUrl] = useState<string | null>(null)
   const [hideGuestName, setHideGuestName] = useState(false)
   const [showPlatform, setShowPlatform] = useState(false)
+  const [notifyNoActivity, setNotifyNoActivity] = useState(true)
 
   useEffect(() => {
     if (!token) return
-    apiFetch<{ hide_guest_name: boolean; show_platform: boolean }>('/api/settings/line', undefined, token)
+    apiFetch<{ hide_guest_name: boolean; show_platform: boolean; notify_no_activity: boolean }>('/api/settings/line', undefined, token)
       .then((data) => {
         setHideGuestName(data.hide_guest_name)
         setShowPlatform(data.show_platform)
+        setNotifyNoActivity(data.notify_no_activity)
       })
       .catch(() => {})
   }, [token])
 
-  async function updateLineSetting(key: 'hide_guest_name' | 'show_platform', value: boolean): Promise<void> {
+  async function updateLineSetting(key: 'hide_guest_name' | 'show_platform' | 'notify_no_activity', value: boolean): Promise<void> {
     if (!token) return
     try {
-      const res = await apiFetch<{ hide_guest_name: boolean; show_platform: boolean }>('/api/settings/line', {
+      const res = await apiFetch<{ hide_guest_name: boolean; show_platform: boolean; notify_no_activity: boolean }>('/api/settings/line', {
         method: 'PATCH',
         body: JSON.stringify({ [key]: value }),
       }, token)
       setHideGuestName(res.hide_guest_name)
       setShowPlatform(res.show_platform)
-      setMessage('LINE表示設定を更新しました')
+      setNotifyNoActivity(res.notify_no_activity)
+      setMessage('LINE設定を更新しました')
     } catch {
       setError('設定の更新に失敗しました')
     }
@@ -193,6 +196,31 @@ export function SettingsPage(): JSX.Element {
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${showPlatform ? 'bg-[#06C755]' : 'bg-gray-300'}`}
               >
                 <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${showPlatform ? 'translate-x-5' : 'translate-x-0'}`} />
+              </button>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      {/* LINE 通知設定 */}
+      <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
+        <div className="border-b border-gray-200 px-5 py-4">
+          <h2 className="text-sm font-semibold text-gray-900">LINE 通知設定</h2>
+          <p className="text-xs text-gray-500">日次レポートの通知タイミングを制御します</p>
+        </div>
+        <div className="p-5">
+          <div className="space-y-3">
+            <label className="flex items-center justify-between gap-4 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+              <div>
+                <p className="text-sm font-medium text-gray-900">予定がない日も日次レポートを送信する</p>
+                <p className="mt-0.5 text-xs text-gray-500">OFFにすると、チェックイン・チェックアウト・未完了シフトが全て0件の日はレポートを送信しません</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void updateLineSetting('notify_no_activity', !notifyNoActivity)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${notifyNoActivity ? 'bg-[#06C755]' : 'bg-gray-300'}`}
+              >
+                <span className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${notifyNoActivity ? 'translate-x-5' : 'translate-x-0'}`} />
               </button>
             </label>
           </div>

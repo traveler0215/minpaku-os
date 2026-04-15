@@ -74,12 +74,13 @@ export default {
         if (request.method === 'GET') {
           const hideGuestName = await env.KV.get('config:hide_guest_name') === 'true'
           const showPlatform = await env.KV.get('config:show_platform') === 'true'
-          return withCors(new Response(JSON.stringify({ success: true, data: { hide_guest_name: hideGuestName, show_platform: showPlatform } }), {
+          const notifyNoActivity = await env.KV.get('config:notify_no_activity') !== 'false'
+          return withCors(new Response(JSON.stringify({ success: true, data: { hide_guest_name: hideGuestName, show_platform: showPlatform, notify_no_activity: notifyNoActivity } }), {
             headers: { 'Content-Type': 'application/json' },
           }))
         }
         if (request.method === 'PATCH') {
-          const body = await request.json() as { hide_guest_name?: boolean; show_platform?: boolean }
+          const body = await request.json() as { hide_guest_name?: boolean; show_platform?: boolean; notify_no_activity?: boolean }
           for (const [key, kvKey] of [['hide_guest_name', 'config:hide_guest_name'], ['show_platform', 'config:show_platform']] as const) {
             const val = body[key]
             if (val !== undefined) {
@@ -87,9 +88,14 @@ export default {
               else await env.KV.delete(kvKey)
             }
           }
+          if (body.notify_no_activity !== undefined) {
+            if (body.notify_no_activity) await env.KV.delete('config:notify_no_activity')
+            else await env.KV.put('config:notify_no_activity', 'false')
+          }
           const hideGuestName = await env.KV.get('config:hide_guest_name') === 'true'
           const showPlatform = await env.KV.get('config:show_platform') === 'true'
-          return withCors(new Response(JSON.stringify({ success: true, data: { hide_guest_name: hideGuestName, show_platform: showPlatform } }), {
+          const notifyNoActivity = await env.KV.get('config:notify_no_activity') !== 'false'
+          return withCors(new Response(JSON.stringify({ success: true, data: { hide_guest_name: hideGuestName, show_platform: showPlatform, notify_no_activity: notifyNoActivity } }), {
             headers: { 'Content-Type': 'application/json' },
           }))
         }
