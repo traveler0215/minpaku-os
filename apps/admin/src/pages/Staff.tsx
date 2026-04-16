@@ -310,32 +310,26 @@ export function StaffPage(): JSX.Element {
       {error && <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
 
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-200 bg-gray-50">
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">名前</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">役割</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">給与</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">担当物件</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">LINE連携</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">アクション</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {staff.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-400">スタッフがまだ登録されていません</td>
-                </tr>
-              ) : staff.map((member) => (
-                <tr key={member.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <p className="text-sm font-medium text-gray-900">{member.name}</p>
-                    <p className="text-xs text-gray-400">{member.hourly_wage !== null ? `¥${member.hourly_wage.toLocaleString()}/${(member.wage_type ?? 'hourly') === 'daily' ? '日' : 'h'}` : '未設定'}</p>
-                  </td>
-                  <td className="px-4 py-3">
+        {staff.length === 0 ? (
+          <p className="px-4 py-10 text-center text-sm text-gray-400">スタッフがまだ登録されていません</p>
+        ) : (
+          <>
+            {/* スマホ: カード表示 */}
+            <div className="sm:hidden divide-y divide-gray-100">
+              {staff.map((member) => (
+                <div key={member.id} className="px-4 py-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium text-gray-900">{member.name}</p>
+                      <p className="text-xs text-gray-400">{member.hourly_wage !== null ? `¥${member.hourly_wage.toLocaleString()}/${(member.wage_type ?? 'hourly') === 'daily' ? '日' : 'h'}` : '給与未設定'}</p>
+                    </div>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${member.line_user_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                      {member.line_user_id ? 'LINE連携済み' : 'LINE未連携'}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
                     <select
-                      className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20"
+                      className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs outline-none focus:border-[#06C755]"
                       value={member.role}
                       onChange={(event) => void updateRole(member, event.target.value as Staff['role'])}
                     >
@@ -343,92 +337,139 @@ export function StaffPage(): JSX.Element {
                       <option value="checkin">チェックイン担当</option>
                       <option value="manager">マネージャー</option>
                     </select>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <select
-                        className="rounded-lg border border-gray-300 px-2 py-2 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20"
-                        value={wageTypeDrafts[member.id] ?? member.wage_type ?? 'hourly'}
-                        onChange={(event) => {
-                          const val = event.target.value as 'hourly' | 'daily'
-                          setWageTypeDrafts((c) => ({ ...c, [member.id]: val }))
-                          void updateWageType(member, val)
-                        }}
-                      >
-                        <option value="hourly">時給</option>
-                        <option value="daily">日給</option>
-                      </select>
-                      <input
-                        className="w-24 rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20"
-                        type="number"
-                        min="0"
-                        placeholder="¥"
-                        value={wageDrafts[member.id] ?? ''}
-                        onChange={(event) => setWageDrafts((current) => ({ ...current, [member.id]: event.target.value }))}
-                        onBlur={() => void updateHourlyWage(member)}
-                      />
+                    <select
+                      className="rounded-lg border border-gray-300 px-2 py-1.5 text-xs outline-none focus:border-[#06C755]"
+                      value={wageTypeDrafts[member.id] ?? member.wage_type ?? 'hourly'}
+                      onChange={(event) => {
+                        const val = event.target.value as 'hourly' | 'daily'
+                        setWageTypeDrafts((c) => ({ ...c, [member.id]: val }))
+                        void updateWageType(member, val)
+                      }}
+                    >
+                      <option value="hourly">時給</option>
+                      <option value="daily">日給</option>
+                    </select>
+                    <input
+                      className="w-20 rounded-lg border border-gray-300 px-2 py-1.5 text-xs outline-none focus:border-[#06C755]"
+                      type="number" min="0" placeholder="¥"
+                      value={wageDrafts[member.id] ?? ''}
+                      onChange={(event) => setWageDrafts((current) => ({ ...current, [member.id]: event.target.value }))}
+                      onBlur={() => void updateHourlyWage(member)}
+                    />
+                  </div>
+                  <details className="group">
+                    <summary className="cursor-pointer list-none text-xs text-gray-500 group-open:mb-1">
+                      担当物件: {(member.property_ids ?? []).length > 0
+                        ? (member.property_ids ?? []).map((pid) => properties.find((p) => p.id === pid)?.name ?? pid).join(', ')
+                        : '未設定（タップで選択）'}
+                    </summary>
+                    <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-2">
+                      {properties.map((property) => (
+                        <label key={property.id} className="flex items-center gap-1.5 text-xs text-gray-700">
+                          <input type="checkbox" className="h-3.5 w-3.5 rounded border-gray-300 text-[#06C755]"
+                            checked={(member.property_ids ?? []).includes(property.id)}
+                            onChange={() => void toggleStaffProperty(member, property.id)} />
+                          {property.name}
+                        </label>
+                      ))}
                     </div>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {properties.length === 0 ? (
-                      <span className="text-xs text-gray-400">物件未登録</span>
-                    ) : (
-                      <details className="group">
-                        <summary className="cursor-pointer list-none text-sm text-gray-600 group-open:mb-2">
-                          {(member.property_ids ?? []).length > 0
-                            ? (member.property_ids ?? [])
-                                .map((propertyId) => properties.find((property) => property.id === propertyId)?.name ?? propertyId)
-                                .join(', ')
-                            : <span className="text-gray-400">未設定（クリックして選択）</span>}
-                        </summary>
-                        <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-2">
-                          {properties.map((property) => (
-                            <label key={property.id} className="flex items-center gap-1.5 text-xs text-gray-700">
-                              <input
-                                type="checkbox"
-                                className="h-3.5 w-3.5 rounded border-gray-300 text-[#06C755] focus:ring-[#06C755]"
-                                checked={(member.property_ids ?? []).includes(property.id)}
-                                onChange={() => void toggleStaffProperty(member, property.id)}
-                              />
-                              {property.name}
-                            </label>
-                          ))}
-                        </div>
-                      </details>
+                  </details>
+                  <div className="flex gap-2">
+                    {member.line_user_id && (
+                      <button type="button" onClick={() => openMessageModalForStaff(member)}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">✉️ 送信</button>
                     )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${member.line_user_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                      {member.line_user_id ? '連携済み' : '未連携'}
-                    </span>
-                    {member.line_user_id && <p className="mt-1 text-xs text-gray-400">{member.line_user_id}</p>}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex justify-end gap-2">
-                      {member.line_user_id && (
-                        <button
-                          type="button"
-                          onClick={() => openMessageModalForStaff(member)}
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                          title="LINE メッセージを送信"
-                        >
-                          ✉️
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => void deactivateStaff(member)}
-                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                      >
-                        無効化
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                    <button type="button" onClick={() => void deactivateStaff(member)}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">無効化</button>
+                  </div>
+                </div>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </div>
+            {/* PC: テーブル表示 */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">名前</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">役割</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">給与</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">担当物件</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">LINE連携</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">アクション</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {staff.map((member) => (
+                    <tr key={member.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-medium text-gray-900">{member.name}</p>
+                        <p className="text-xs text-gray-400">{member.hourly_wage !== null ? `¥${member.hourly_wage.toLocaleString()}/${(member.wage_type ?? 'hourly') === 'daily' ? '日' : 'h'}` : '未設定'}</p>
+                      </td>
+                      <td className="px-4 py-3">
+                        <select className="rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20"
+                          value={member.role} onChange={(event) => void updateRole(member, event.target.value as Staff['role'])}>
+                          <option value="cleaner">清掃スタッフ</option>
+                          <option value="checkin">チェックイン担当</option>
+                          <option value="manager">マネージャー</option>
+                        </select>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <select className="rounded-lg border border-gray-300 px-2 py-2 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20"
+                            value={wageTypeDrafts[member.id] ?? member.wage_type ?? 'hourly'}
+                            onChange={(event) => { const val = event.target.value as 'hourly' | 'daily'; setWageTypeDrafts((c) => ({ ...c, [member.id]: val })); void updateWageType(member, val) }}>
+                            <option value="hourly">時給</option>
+                            <option value="daily">日給</option>
+                          </select>
+                          <input className="w-24 rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20"
+                            type="number" min="0" placeholder="¥" value={wageDrafts[member.id] ?? ''}
+                            onChange={(event) => setWageDrafts((current) => ({ ...current, [member.id]: event.target.value }))}
+                            onBlur={() => void updateHourlyWage(member)} />
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        {properties.length === 0 ? <span className="text-xs text-gray-400">物件未登録</span> : (
+                          <details className="group">
+                            <summary className="cursor-pointer list-none text-sm text-gray-600 group-open:mb-2">
+                              {(member.property_ids ?? []).length > 0
+                                ? (member.property_ids ?? []).map((propertyId) => properties.find((property) => property.id === propertyId)?.name ?? propertyId).join(', ')
+                                : <span className="text-gray-400">未設定（クリックして選択）</span>}
+                            </summary>
+                            <div className="flex flex-col gap-1 rounded-lg border border-gray-200 bg-gray-50 p-2">
+                              {properties.map((property) => (
+                                <label key={property.id} className="flex items-center gap-1.5 text-xs text-gray-700">
+                                  <input type="checkbox" className="h-3.5 w-3.5 rounded border-gray-300 text-[#06C755] focus:ring-[#06C755]"
+                                    checked={(member.property_ids ?? []).includes(property.id)}
+                                    onChange={() => void toggleStaffProperty(member, property.id)} />
+                                  {property.name}
+                                </label>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${member.line_user_id ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                          {member.line_user_id ? '連携済み' : '未連携'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex justify-end gap-2">
+                          {member.line_user_id && (
+                            <button type="button" onClick={() => openMessageModalForStaff(member)}
+                              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" title="LINE メッセージを送信">✉️</button>
+                          )}
+                          <button type="button" onClick={() => void deactivateStaff(member)}
+                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50">無効化</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       {/* LINE メッセージ送信モーダル */}

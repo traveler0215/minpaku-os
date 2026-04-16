@@ -365,82 +365,111 @@ export function SettingsPage(): JSX.Element {
         )}
 
         <div className="border border-gray-200 bg-white rounded-lg shadow-sm overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                <tr>
-                  <th className="px-4 py-3 text-left">名前</th>
-                  <th className="px-4 py-3 text-left">メール</th>
-                  <th className="px-4 py-3 text-left">権限</th>
-                  <th className="px-4 py-3 text-left">状態</th>
-                  <th className="px-4 py-3 text-left">最終ログイン</th>
-                  <th className="px-4 py-3 text-right">操作</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {isLoading ? (
-                  <tr className="hover:bg-gray-50">
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-400">読み込み中...</td>
-                  </tr>
-                ) : sortedAdminUsers.length === 0 ? (
-                  <tr className="hover:bg-gray-50">
-                    <td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-400">管理ユーザーが登録されていません</td>
-                  </tr>
-                ) : sortedAdminUsers.map((adminUser) => {
+          {isLoading ? (
+            <p className="px-4 py-8 text-center text-sm text-gray-400">読み込み中...</p>
+          ) : sortedAdminUsers.length === 0 ? (
+            <p className="px-4 py-8 text-center text-sm text-gray-400">管理ユーザーが登録されていません</p>
+          ) : (
+            <>
+              {/* スマホ: カード表示 */}
+              <div className="sm:hidden divide-y divide-gray-100">
+                {sortedAdminUsers.map((adminUser) => {
                   const isCurrentUser = adminUser.id === user?.id
                   return (
-                    <tr key={adminUser.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3">
-                        <div className="text-sm font-medium text-gray-900">{adminUser.name}</div>
-                        <div className="text-xs text-gray-400">{new Date(adminUser.created_at).toLocaleDateString('ja-JP')} 作成</div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{adminUser.email}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          <span className={roleBadgeClassName(adminUser.role)}>{adminUser.role}</span>
-                          <select
-                            className={selectClassName}
-                            value={adminUser.role}
-                            onChange={(event) => void handleRoleChange(adminUser, event.target.value as AdminUser['role'])}
-                          >
-                            <option value="owner">オーナー</option>
-                            <option value="manager">マネージャー</option>
-                            <option value="viewer">閲覧者</option>
-                          </select>
+                    <div key={adminUser.id} className="px-4 py-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-medium text-gray-900">{adminUser.name}</p>
+                          <p className="text-xs text-gray-400">{adminUser.email}</p>
                         </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-3">
-                          <span className={statusBadgeClassName(adminUser.is_active)}>{adminUser.is_active === 1 ? 'active' : 'inactive'}</span>
-                          <button
-                            type="button"
-                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                            onClick={() => void handleStatusToggle(adminUser)}
-                          >
+                        <span className={statusBadgeClassName(adminUser.is_active)}>{adminUser.is_active === 1 ? 'active' : 'inactive'}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={roleBadgeClassName(adminUser.role)}>{adminUser.role}</span>
+                        <select className="rounded-lg border border-gray-300 px-2 py-1 text-xs" value={adminUser.role}
+                          onChange={(event) => void handleRoleChange(adminUser, event.target.value as AdminUser['role'])}>
+                          <option value="owner">オーナー</option>
+                          <option value="manager">マネージャー</option>
+                          <option value="viewer">閲覧者</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs text-gray-400">{formatLastLogin(adminUser.last_login)}</span>
+                        <div className="flex gap-2">
+                          <button type="button" onClick={() => void handleStatusToggle(adminUser)}
+                            className="rounded-lg border border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50">
                             {adminUser.is_active === 1 ? '無効化' : '有効化'}
                           </button>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-600">{formatLastLogin(adminUser.last_login)}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex justify-end">
-                          <button
-                            type="button"
-                            className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                            onClick={() => void handleDelete(adminUser)}
-                            disabled={isCurrentUser}
-                            title={isCurrentUser ? '自分自身は削除できません' : '管理ユーザーを削除'}
-                          >
+                          <button type="button" onClick={() => void handleDelete(adminUser)} disabled={isCurrentUser}
+                            className="rounded-lg border border-red-200 bg-white px-2.5 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50">
                             削除
                           </button>
                         </div>
-                      </td>
-                    </tr>
+                      </div>
+                    </div>
                   )
                 })}
-              </tbody>
-            </table>
-          </div>
+              </div>
+              {/* PC: テーブル表示 */}
+              <div className="hidden sm:block overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-gray-50 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                    <tr>
+                      <th className="px-4 py-3 text-left">名前</th>
+                      <th className="px-4 py-3 text-left">メール</th>
+                      <th className="px-4 py-3 text-left">権限</th>
+                      <th className="px-4 py-3 text-left">状態</th>
+                      <th className="px-4 py-3 text-left">最終ログイン</th>
+                      <th className="px-4 py-3 text-right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {sortedAdminUsers.map((adminUser) => {
+                      const isCurrentUser = adminUser.id === user?.id
+                      return (
+                        <tr key={adminUser.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3">
+                            <div className="text-sm font-medium text-gray-900">{adminUser.name}</div>
+                            <div className="text-xs text-gray-400">{new Date(adminUser.created_at).toLocaleDateString('ja-JP')} 作成</div>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">{adminUser.email}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <span className={roleBadgeClassName(adminUser.role)}>{adminUser.role}</span>
+                              <select className={selectClassName} value={adminUser.role}
+                                onChange={(event) => void handleRoleChange(adminUser, event.target.value as AdminUser['role'])}>
+                                <option value="owner">オーナー</option>
+                                <option value="manager">マネージャー</option>
+                                <option value="viewer">閲覧者</option>
+                              </select>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <span className={statusBadgeClassName(adminUser.is_active)}>{adminUser.is_active === 1 ? 'active' : 'inactive'}</span>
+                              <button type="button" className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                                onClick={() => void handleStatusToggle(adminUser)}>
+                                {adminUser.is_active === 1 ? '無効化' : '有効化'}
+                              </button>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">{formatLastLogin(adminUser.last_login)}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex justify-end">
+                              <button type="button"
+                                className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                onClick={() => void handleDelete(adminUser)} disabled={isCurrentUser}
+                                title={isCurrentUser ? '自分自身は削除できません' : '管理ユーザーを削除'}>削除</button>
+                            </div>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       </section>
     </div>

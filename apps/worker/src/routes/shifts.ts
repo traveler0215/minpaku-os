@@ -436,11 +436,15 @@ async function handleListShiftRequests(env: Env, searchParams: URLSearchParams):
 
 async function handleListShifts(env: Env, searchParams: URLSearchParams): Promise<Response> {
   const week = searchParams.get('week')?.trim()
+  const month = searchParams.get('month')?.trim()
   const propertyId = searchParams.get('property_id')?.trim()
   const staffId = searchParams.get('staff_id')?.trim()
 
   if (week && !isDate(week)) {
     return jsonError('week は YYYY-MM-DD 形式で指定してください', 400)
+  }
+  if (month && !/^\d{4}-\d{2}$/.test(month)) {
+    return jsonError('month は YYYY-MM 形式で指定してください', 400)
   }
 
   const conditions: string[] = []
@@ -450,6 +454,10 @@ async function handleListShifts(env: Env, searchParams: URLSearchParams): Promis
     conditions.push('sh.date >= ?')
     conditions.push("sh.date < date(?, '+7 days')")
     bindings.push(week, week)
+  } else if (month) {
+    conditions.push('sh.date >= ?')
+    conditions.push("sh.date < date(?, '+1 month')")
+    bindings.push(`${month}-01`, `${month}-01`)
   }
   if (propertyId) {
     conditions.push('sh.property_id = ?')

@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import FullCalendar from '@fullcalendar/react'
+import type { DatesSetArg } from '@fullcalendar/core'
+import jaLocale from '@fullcalendar/core/locales/ja'
+import dayGridPlugin from '@fullcalendar/daygrid'
 import { useAuth } from '../lib/auth'
 import { apiFetch } from '../lib/api'
-import type { Property, Shift, Staff } from '../lib/types'
+import type { Property, Reservation, Shift, Staff } from '../lib/types'
 
 type ShiftRow = Shift & {
   staff_name?: string
@@ -102,6 +106,9 @@ export function ShiftsPage(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [weekStart, setWeekStart] = useState(getWeekStart)
   const nextWeekStart = getNextMondayFromWeek(weekStart)
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const [monthReservations, setMonthReservations] = useState<Reservation[]>([])
+  const [monthShifts, setMonthShifts] = useState<ShiftRow[]>([])
 
   function goToPrevWeek(): void { setWeekStart(addWeeks(weekStart, -1)) }
   function goToNextWeek(): void { setWeekStart(addWeeks(weekStart, 1)) }
@@ -291,6 +298,21 @@ export function ShiftsPage(): JSX.Element {
     void load()
   }, [token, weekStart])
 
+  useEffect(() => {
+    async function loadMonth(): Promise<void> {
+      if (!token) return
+      try {
+        const [resList, shiftList] = await Promise.all([
+          apiFetch<Reservation[]>(`/api/reservations?month=${calendarMonth}`, undefined, token),
+          apiFetch<ShiftRow[]>(`/api/shifts?month=${calendarMonth}`, undefined, token).catch(() => []),
+        ])
+        setMonthReservations(resList)
+        setMonthShifts(shiftList)
+      } catch { /* silent */ }
+    }
+    void loadMonth()
+  }, [token, calendarMonth])
+
   async function handlePropose(): Promise<void> {
     if (!token) return
 
@@ -345,12 +367,6 @@ export function ShiftsPage(): JSX.Element {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">シフト管理</h1>
-          <div className="mt-2 flex items-center gap-2">
-            <button type="button" onClick={goToPrevWeek} className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">←</button>
-            <button type="button" onClick={goToThisWeek} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">今週</button>
-            <button type="button" onClick={goToNextWeek} className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">→</button>
-            <span className="ml-2 text-sm text-gray-500">{weekStart} 〜 {buildWeekDays(weekStart)[6]}</span>
-          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {AGENT_ENABLED && (
@@ -383,16 +399,34 @@ export function ShiftsPage(): JSX.Element {
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      {message && <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-700">{message}</div>}
+      {error && <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
+
+      {/* 月間シフトカレンダー */}
+      <ShiftCalendar
+        calendarMonth={calendarMonth}
+        setCalendarMonth={setCalendarMonth}
+        properties={properties}
+        reservations={monthReservations}
+        shifts={monthShifts}
+        staff={staff}
+      />
+
+      {/* 週ナビゲーション + サマリー */}
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={goToPrevWeek} className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">←</button>
+        <button type="button" onClick={goToThisWeek} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">今週</button>
+        <button type="button" onClick={goToNextWeek} className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">→</button>
+        <span className="ml-2 text-sm text-gray-500">{weekStart} 〜 {buildWeekDays(weekStart)[6]}</span>
+      </div>
+
+      <div className="grid gap-4 grid-cols-3">
         <SummaryCard label="この週のシフト" value={shifts.length} />
         <SummaryCard label="提案待ち" value={proposedCount} />
         <SummaryCard label="稼働スタッフ" value={new Set(shifts.map((shift) => shift.staff_id)).size || staff.length} />
       </div>
 
-      {message && <div className="rounded-lg border border-green-200 bg-green-50 p-4 text-sm text-green-700">{message}</div>}
-      {error && <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>}
-
-      {/* 来週のシフト希望（LIFF から収集） */}
+      {/* 今後のシフト希望（LIFF から収集） */}
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
         <div className="flex flex-col gap-3 border-b border-gray-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -413,68 +447,94 @@ export function ShiftsPage(): JSX.Element {
             <span className="text-xs">毎週月曜09:00にスタッフへ LIFF リンクが自動配信されます。</span>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-50">
-                  <th className="sticky left-0 bg-gray-50 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">スタッフ</th>
-                  {buildWeekDays(nextWeekStart).map((day) => (
-                    <th key={day} className="px-3 py-3 text-center text-xs font-semibold text-gray-500 whitespace-nowrap">
-                      {formatShortDay(day)}
-                    </th>
-                  ))}
-                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 whitespace-nowrap">送信日時</th>
-                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">アクション</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {shiftRequests.map((request) => (
-                  <tr key={request.id} className="hover:bg-gray-50">
-                    <td className="sticky left-0 bg-white px-4 py-3">
-                      <p className="text-sm font-medium text-gray-900">{request.staff_name}</p>
-                      <p className="text-xs text-gray-400">{request.staff_role}</p>
-                    </td>
-                    {buildWeekDays(nextWeekStart).map((day) => {
-                      const available = request.available_dates.includes(day)
-                      const time = request.available_times[day]
-                      return (
-                        <td key={day} className="px-3 py-3 text-center text-xs">
-                          {available ? (
-                            <div className="rounded-md bg-green-100 px-1 py-1 font-medium text-green-700">
-                              {time ? `${time.from.slice(0, 5)}〜${time.to.slice(0, 5)}` : '○'}
-                            </div>
-                          ) : (
-                            <span className="text-gray-300">—</span>
-                          )}
-                        </td>
-                      )
-                    })}
-                    <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
-                      {formatCollectedAt(request.collected_at)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          type="button"
-                          onClick={() => openRequestEditModal(request)}
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50"
-                        >
-                          編集
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteRequest(request)}
-                          className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50"
-                        >
-                          削除
-                        </button>
+          <>
+            {/* スマホ: カード表示 */}
+            <div className="sm:hidden divide-y divide-gray-100">
+              {shiftRequests.map((request) => {
+                const availableDays = buildWeekDays(nextWeekStart).filter((day) => request.available_dates.includes(day))
+                return (
+                  <div key={request.id} className="px-4 py-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">{request.staff_name}</p>
+                        <p className="text-xs text-gray-400">{request.staff_role}</p>
                       </div>
-                    </td>
+                      <span className="text-xs text-gray-400">{formatCollectedAt(request.collected_at)}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {availableDays.length > 0 ? availableDays.map((day) => {
+                        const time = request.available_times[day]
+                        return (
+                          <span key={day} className="rounded-md bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+                            {formatShortDay(day)} {time ? `${time.from.slice(0, 5)}〜${time.to.slice(0, 5)}` : ''}
+                          </span>
+                        )
+                      }) : <span className="text-xs text-gray-400">希望なし</span>}
+                    </div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => openRequestEditModal(request)}
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">編集</button>
+                      <button type="button" onClick={() => void handleDeleteRequest(request)}
+                        className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50">削除</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+            {/* PC: テーブル表示 */}
+            <div className="hidden sm:block overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50">
+                    <th className="sticky left-0 bg-gray-50 px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">スタッフ</th>
+                    {buildWeekDays(nextWeekStart).map((day) => (
+                      <th key={day} className="px-3 py-3 text-center text-xs font-semibold text-gray-500 whitespace-nowrap">
+                        {formatShortDay(day)}
+                      </th>
+                    ))}
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 whitespace-nowrap">送信日時</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 whitespace-nowrap">アクション</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {shiftRequests.map((request) => (
+                    <tr key={request.id} className="hover:bg-gray-50">
+                      <td className="sticky left-0 bg-white px-4 py-3">
+                        <p className="text-sm font-medium text-gray-900">{request.staff_name}</p>
+                        <p className="text-xs text-gray-400">{request.staff_role}</p>
+                      </td>
+                      {buildWeekDays(nextWeekStart).map((day) => {
+                        const available = request.available_dates.includes(day)
+                        const time = request.available_times[day]
+                        return (
+                          <td key={day} className="px-3 py-3 text-center text-xs">
+                            {available ? (
+                              <div className="rounded-md bg-green-100 px-1 py-1 font-medium text-green-700">
+                                {time ? `${time.from.slice(0, 5)}〜${time.to.slice(0, 5)}` : '○'}
+                              </div>
+                            ) : (
+                              <span className="text-gray-300">—</span>
+                            )}
+                          </td>
+                        )
+                      })}
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                        {formatCollectedAt(request.collected_at)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex justify-end gap-2">
+                          <button type="button" onClick={() => openRequestEditModal(request)}
+                            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-xs font-medium text-gray-700 hover:bg-gray-50">編集</button>
+                          <button type="button" onClick={() => void handleDeleteRequest(request)}
+                            className="rounded-lg border border-red-200 bg-white px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50">削除</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
 
@@ -486,26 +546,7 @@ export function ShiftsPage(): JSX.Element {
             <p className="text-xs text-gray-500">スタッフからの返答待ち・提案中のシフトです</p>
           </div>
           <div className="overflow-hidden rounded-lg border border-amber-200 bg-white shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-amber-200 bg-amber-50">
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">スタッフ</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">物件</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">日付</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">タスク</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">時間</th>
-                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">状態</th>
-                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">アクション</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {pendingShifts.map((shift) => (
-                    <ShiftTableRow key={shift.id} shift={shift} staff={staff} properties={properties} onConfirm={updateShiftStatus} onComplete={updateShiftStatus} onEdit={openEditModal} onDelete={handleDeleteShift} />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <ShiftList shifts={pendingShifts} staff={staff} properties={properties} onConfirm={updateShiftStatus} onComplete={updateShiftStatus} onEdit={openEditModal} onDelete={handleDeleteShift} emptyMessage="" />
           </div>
         </>
       )}
@@ -516,30 +557,7 @@ export function ShiftsPage(): JSX.Element {
       </div>
 
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-gray-200 bg-gray-50">
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">スタッフ</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">物件</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">日付</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">タスク</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">時間</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">状態</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">アクション</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {confirmedShifts.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">この週の確定シフトはまだありません</td>
-                </tr>
-              ) : confirmedShifts.map((shift) => (
-                <ShiftTableRow key={shift.id} shift={shift} staff={staff} properties={properties} onConfirm={updateShiftStatus} onComplete={updateShiftStatus} onEdit={openEditModal} onDelete={handleDeleteShift} />
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ShiftList shifts={confirmedShifts} staff={staff} properties={properties} onConfirm={updateShiftStatus} onComplete={updateShiftStatus} onEdit={openEditModal} onDelete={handleDeleteShift} emptyMessage="この週の確定シフトはまだありません" />
       </div>
 
       {/* シフト追加・編集モーダル */}
@@ -880,68 +898,207 @@ function formatTimeRange(startTime: string | null, endTime: string | null): stri
   return `${startTime ?? '--:--'} - ${endTime ?? '--:--'}`
 }
 
-function ShiftTableRow({ shift, staff, properties, onConfirm, onComplete, onEdit, onDelete }: {
-  shift: ShiftRow
+// 物件カラー（Calendar.tsxと同じパレット）
+const PROPERTY_COLORS = [
+  '#2563eb', '#dc5d43', '#2f855a', '#9333ea', '#d97706', '#0891b2', '#e11d48', '#4f46e5',
+]
+
+interface ShiftCalendarDetail {
+  date: string
+  propertyName: string
+  hasShift: boolean
+  shiftInfo: ShiftRow | null
+  reservation: Reservation
+}
+
+function ShiftCalendar({ calendarMonth, setCalendarMonth, properties, reservations, shifts, staff }: {
+  calendarMonth: string
+  setCalendarMonth: (m: string) => void
+  properties: Property[]
+  reservations: Reservation[]
+  shifts: ShiftRow[]
+  staff: Staff[]
+}): JSX.Element {
+  const [selected, setSelected] = useState<ShiftCalendarDetail | null>(null)
+
+  function getPropertyColor(propertyId: string): string {
+    const idx = properties.findIndex((p) => p.id === propertyId)
+    return PROPERTY_COLORS[idx >= 0 ? idx % PROPERTY_COLORS.length : 0]
+  }
+
+  // reservationIdからデータを逆引きするマップ
+  const detailMap = useMemo(() => {
+    const map = new Map<string, ShiftCalendarDetail>()
+    for (const r of reservations) {
+      if (r.status === 'cancelled' || r.status === 'blocked') continue
+      const pName = properties.find((p) => p.id === r.property_id)?.name ?? '不明'
+      const shift = shifts.find((s) => s.property_id === r.property_id && s.date === r.checkout_date && s.task_type === 'cleaning') ?? null
+      map.set(r.id, { date: r.checkout_date, propertyName: pName, hasShift: !!shift, shiftInfo: shift, reservation: r })
+    }
+    return map
+  }, [reservations, properties, shifts])
+
+  const events = useMemo(() => {
+    const result: Array<{ id: string; title: string; start: string; end: string; color: string }> = []
+    for (const [rId, detail] of detailMap) {
+      result.push({
+        id: rId,
+        title: detail.hasShift ? detail.propertyName : `! ${detail.propertyName}`,
+        start: detail.date,
+        end: detail.date,
+        color: detail.hasShift ? getPropertyColor(detail.reservation.property_id) : '#ef4444',
+      })
+    }
+    return result
+  }, [detailMap])
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+      <div className="border-b border-gray-200 px-4 py-3">
+        <h2 className="text-lg font-bold text-gray-900">月間シフトカレンダー</h2>
+        <p className="mt-1 text-xs text-gray-500">
+          チェックアウト日を物件別に表示。<span className="text-red-500 font-bold">!</span> = 清掃シフト未割当
+        </p>
+        <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-gray-500">
+          {properties.map((p, i) => (
+            <span key={p.id} className="inline-flex items-center gap-1">
+              <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: PROPERTY_COLORS[i % PROPERTY_COLORS.length] }} />
+              {p.name}
+            </span>
+          ))}
+        </div>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_280px]">
+        <div className="p-2 sm:p-4">
+          <FullCalendar
+            plugins={[dayGridPlugin]}
+            initialView="dayGridMonth"
+            initialDate={`${calendarMonth}-01`}
+            height="auto"
+            locale={jaLocale}
+            events={events}
+            eventClick={(info) => {
+              const detail = detailMap.get(info.event.id)
+              if (detail) setSelected(detail)
+            }}
+            datesSet={(arg: DatesSetArg) => {
+              const mid = new Date((arg.start.getTime() + arg.end.getTime()) / 2)
+              const month = `${mid.getFullYear()}-${String(mid.getMonth() + 1).padStart(2, '0')}`
+              if (month !== calendarMonth) setCalendarMonth(month)
+            }}
+          />
+        </div>
+        <div className="rounded-lg border border-gray-200 bg-white shadow-sm xl:my-4 xl:mr-4">
+          <div className="border-b border-gray-200 px-4 py-3">
+            <h3 className="text-sm font-semibold text-gray-900">チェックアウト詳細</h3>
+          </div>
+          {!selected ? (
+            <p className="px-4 py-6 text-sm text-gray-400">カレンダーのイベントをクリック</p>
+          ) : (
+            <div className="space-y-2 p-4 text-sm">
+              <div className="flex gap-3"><span className="w-16 shrink-0 text-gray-400">物件</span><span className="text-gray-900">{selected.propertyName}</span></div>
+              <div className="flex gap-3"><span className="w-16 shrink-0 text-gray-400">CO日</span><span className="text-gray-900">{selected.date}</span></div>
+              <div className="flex gap-3"><span className="w-16 shrink-0 text-gray-400">ゲスト</span><span className="text-gray-900">{selected.reservation.guest_name ?? '未設定'}</span></div>
+              <div className="flex gap-3"><span className="w-16 shrink-0 text-gray-400">清掃</span>
+                {selected.hasShift && selected.shiftInfo ? (
+                  <span className="text-green-700">
+                    {selected.shiftInfo.staff_name ?? '割当済み'}
+                    {selected.shiftInfo.start_time ? ` / ${selected.shiftInfo.start_time}〜${selected.shiftInfo.end_time ?? ''}` : ''}
+                    <span className={`ml-1 rounded-full px-1.5 py-0.5 text-xs ${STATUS_BADGE[selected.shiftInfo.status]}`}>{selected.shiftInfo.status}</span>
+                  </span>
+                ) : (
+                  <span className="text-red-500 font-medium">未割当</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ShiftList({ shifts, staff, properties, onConfirm, onComplete, onEdit, onDelete, emptyMessage }: {
+  shifts: ShiftRow[]
   staff: Staff[]
   properties: Property[]
   onConfirm: (id: string, status: Shift['status']) => Promise<void>
   onComplete: (id: string, status: Shift['status']) => Promise<void>
   onEdit: (shift: ShiftRow) => void
   onDelete: (shift: ShiftRow) => Promise<void>
+  emptyMessage: string
 }): JSX.Element {
+  if (shifts.length === 0) {
+    return <p className="px-4 py-10 text-center text-sm text-gray-400">{emptyMessage}</p>
+  }
+
+  function staffName(shift: ShiftRow): string {
+    return shift.staff_name ?? staff.find((m) => m.id === shift.staff_id)?.name ?? '未設定'
+  }
+  function propName(shift: ShiftRow): string {
+    return shift.property_name ?? properties.find((p) => p.id === shift.property_id)?.name ?? '未設定'
+  }
+  function shiftButtons(shift: ShiftRow): JSX.Element {
+    return (
+      <div className="flex flex-wrap gap-2">
+        {(shift.status === 'proposed' || shift.status === 'notified') && (
+          <button type="button" onClick={() => void onConfirm(shift.id, 'confirmed')} className="rounded-lg px-3 py-1.5 text-xs font-medium text-white hover:opacity-90" style={{ backgroundColor: '#06C755' }}>確定</button>
+        )}
+        {shift.status !== 'completed' && shift.status !== 'cancelled' && (
+          <button type="button" onClick={() => void onComplete(shift.id, 'completed')} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">完了</button>
+        )}
+        <button type="button" onClick={() => onEdit(shift)} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50">編集</button>
+        <button type="button" onClick={() => void onDelete(shift)} className="rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50">削除</button>
+      </div>
+    )
+  }
+
   return (
-    <tr className="hover:bg-gray-50">
-      <td className="px-4 py-3">
-        <p className="text-sm font-medium text-gray-900">{shift.staff_name ?? staff.find((m) => m.id === shift.staff_id)?.name ?? '未設定'}</p>
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-600">
-        {shift.property_name ?? properties.find((p) => p.id === shift.property_id)?.name ?? '未設定'}
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDate(shift.date)}</td>
-      <td className="px-4 py-3 text-sm text-gray-600">{TASK_LABEL[shift.task_type]}</td>
-      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatTimeRange(shift.start_time, shift.end_time)}</td>
-      <td className="px-4 py-3">
-        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[shift.status]}`}>
-          {shift.status}
-        </span>
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex flex-wrap justify-end gap-2">
-          {(shift.status === 'proposed' || shift.status === 'notified') && (
-            <button
-              type="button"
-              onClick={() => void onConfirm(shift.id, 'confirmed')}
-              className="rounded-lg px-3 py-2 text-sm font-medium text-white hover:opacity-90"
-              style={{ backgroundColor: '#06C755' }}
-            >
-              確定
-            </button>
-          )}
-          {shift.status !== 'completed' && shift.status !== 'cancelled' && (
-            <button
-              type="button"
-              onClick={() => void onComplete(shift.id, 'completed')}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-            >
-              完了
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => onEdit(shift)}
-            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-          >
-            編集
-          </button>
-          <button
-            type="button"
-            onClick={() => void onDelete(shift)}
-            className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-          >
-            削除
-          </button>
-        </div>
-      </td>
-    </tr>
+    <>
+      {/* スマホ: カード表示 */}
+      <div className="sm:hidden divide-y divide-gray-100">
+        {shifts.map((shift) => (
+          <div key={shift.id} className="px-4 py-3 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-medium text-gray-900">{staffName(shift)}</span>
+              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[shift.status]}`}>{shift.status}</span>
+            </div>
+            <div className="text-xs text-gray-500">
+              {propName(shift)} / {TASK_LABEL[shift.task_type]} / {formatDate(shift.date)} {formatTimeRange(shift.start_time, shift.end_time)}
+            </div>
+            {shiftButtons(shift)}
+          </div>
+        ))}
+      </div>
+      {/* PC: テーブル表示 */}
+      <div className="hidden sm:block overflow-x-auto">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-gray-200 bg-gray-50">
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">スタッフ</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">物件</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">日付</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">タスク</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">時間</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">状態</th>
+              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">アクション</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {shifts.map((shift) => (
+              <tr key={shift.id} className="hover:bg-gray-50">
+                <td className="px-4 py-3 text-sm font-medium text-gray-900">{staffName(shift)}</td>
+                <td className="px-4 py-3 text-sm text-gray-600">{propName(shift)}</td>
+                <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDate(shift.date)}</td>
+                <td className="px-4 py-3 text-sm text-gray-600">{TASK_LABEL[shift.task_type]}</td>
+                <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatTimeRange(shift.start_time, shift.end_time)}</td>
+                <td className="px-4 py-3"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[shift.status]}`}>{shift.status}</span></td>
+                <td className="px-4 py-3"><div className="flex justify-end">{shiftButtons(shift)}</div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   )
 }
