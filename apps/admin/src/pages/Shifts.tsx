@@ -100,8 +100,12 @@ export function ShiftsPage(): JSX.Element {
   const [editDraft, setEditDraft] = useState<ShiftFormDraft | null>(null)
   const [requestDraft, setRequestDraft] = useState<ShiftRequestDraft | null>(null)
   const [saving, setSaving] = useState(false)
-  const weekStart = getWeekStart()
+  const [weekStart, setWeekStart] = useState(getWeekStart)
   const nextWeekStart = getNextMondayFromWeek(weekStart)
+
+  function goToPrevWeek(): void { setWeekStart(addWeeks(weekStart, -1)) }
+  function goToNextWeek(): void { setWeekStart(addWeeks(weekStart, 1)) }
+  function goToThisWeek(): void { setWeekStart(getWeekStart()) }
 
   function openCreateModal(): void {
     setEditDraft({ ...EMPTY_DRAFT, date: weekStart })
@@ -332,14 +336,21 @@ export function ShiftsPage(): JSX.Element {
     }
   }
 
-  const proposedCount = shifts.filter((shift) => shift.status === 'proposed').length
+  const pendingShifts = shifts.filter((shift) => shift.status === 'proposed' || shift.status === 'notified')
+  const confirmedShifts = shifts.filter((shift) => shift.status !== 'proposed' && shift.status !== 'notified')
+  const proposedCount = pendingShifts.length
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">シフト管理</h1>
-          <p className="mt-1 text-sm text-gray-500">{weekStart} 開始週の清掃・対応予定を管理します</p>
+          <div className="mt-2 flex items-center gap-2">
+            <button type="button" onClick={goToPrevWeek} className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">←</button>
+            <button type="button" onClick={goToThisWeek} className="rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">今週</button>
+            <button type="button" onClick={goToNextWeek} className="rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50">→</button>
+            <span className="ml-2 text-sm text-gray-500">{weekStart} 〜 {buildWeekDays(weekStart)[6]}</span>
+          </div>
         </div>
         <div className="flex flex-wrap gap-2">
           {AGENT_ENABLED && (
@@ -373,7 +384,7 @@ export function ShiftsPage(): JSX.Element {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <SummaryCard label="今週のシフト" value={shifts.length} />
+        <SummaryCard label="この週のシフト" value={shifts.length} />
         <SummaryCard label="提案待ち" value={proposedCount} />
         <SummaryCard label="稼働スタッフ" value={new Set(shifts.map((shift) => shift.staff_id)).size || staff.length} />
       </div>
@@ -385,8 +396,8 @@ export function ShiftsPage(): JSX.Element {
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
         <div className="flex flex-col gap-3 border-b border-gray-200 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-bold text-gray-900">来週のシフト希望</h2>
-            <p className="mt-0.5 text-xs text-gray-500">{nextWeekStart} 週 / LIFF で収集中 ・ {shiftRequests.length} 件</p>
+            <h2 className="text-lg font-bold text-gray-900">今後のシフト希望</h2>
+            <p className="mt-0.5 text-xs text-gray-500">{nextWeekStart} 週〜 / LIFF で収集中 ・ {shiftRequests.length} 件</p>
           </div>
           <button
             type="button"
@@ -467,9 +478,41 @@ export function ShiftsPage(): JSX.Element {
         )}
       </div>
 
-      {/* 今週の確定シフト */}
+      {/* 未確定シフト（提案中・通知済み） */}
+      {pendingShifts.length > 0 && (
+        <>
+          <div>
+            <h2 className="mb-2 text-lg font-bold text-gray-900">未確定シフト</h2>
+            <p className="text-xs text-gray-500">スタッフからの返答待ち・提案中のシフトです</p>
+          </div>
+          <div className="overflow-hidden rounded-lg border border-amber-200 bg-white shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-amber-200 bg-amber-50">
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">スタッフ</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">物件</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">日付</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">タスク</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">時間</th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">状態</th>
+                    <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">アクション</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {pendingShifts.map((shift) => (
+                    <ShiftTableRow key={shift.id} shift={shift} staff={staff} properties={properties} onConfirm={updateShiftStatus} onComplete={updateShiftStatus} onEdit={openEditModal} onDelete={handleDeleteShift} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* 確定済みシフト */}
       <div>
-        <h2 className="mb-2 text-lg font-bold text-gray-900">今週の確定シフト</h2>
+        <h2 className="mb-2 text-lg font-bold text-gray-900">確定シフト</h2>
       </div>
 
       <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
@@ -487,65 +530,12 @@ export function ShiftsPage(): JSX.Element {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {shifts.length === 0 ? (
+              {confirmedShifts.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">この週のシフトはまだありません</td>
+                  <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">この週の確定シフトはまだありません</td>
                 </tr>
-              ) : shifts.map((shift) => (
-                <tr key={shift.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <p className="text-sm font-medium text-gray-900">{shift.staff_name ?? staff.find((member) => member.id === shift.staff_id)?.name ?? '未設定'}</p>
-                    <p className="text-xs text-gray-400">{shift.staff_id}</p>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {shift.property_name ?? properties.find((property) => property.id === shift.property_id)?.name ?? '未設定'}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDate(shift.date)}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{TASK_LABEL[shift.task_type]}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatTimeRange(shift.start_time, shift.end_time)}</td>
-                  <td className="px-4 py-3">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[shift.status]}`}>
-                      {shift.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap justify-end gap-2">
-                      {shift.status === 'proposed' && (
-                        <button
-                          type="button"
-                          onClick={() => void updateShiftStatus(shift.id, 'confirmed')}
-                          className="rounded-lg px-3 py-2 text-sm font-medium text-white hover:opacity-90"
-                          style={{ backgroundColor: '#06C755' }}
-                        >
-                          確定
-                        </button>
-                      )}
-                      {shift.status !== 'completed' && shift.status !== 'cancelled' && (
-                        <button
-                          type="button"
-                          onClick={() => void updateShiftStatus(shift.id, 'completed')}
-                          className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                        >
-                          完了
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => openEditModal(shift)}
-                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                      >
-                        編集
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeleteShift(shift)}
-                        className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-                      >
-                        削除
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+              ) : confirmedShifts.map((shift) => (
+                <ShiftTableRow key={shift.id} shift={shift} staff={staff} properties={properties} onConfirm={updateShiftStatus} onComplete={updateShiftStatus} onEdit={openEditModal} onDelete={handleDeleteShift} />
               ))}
             </tbody>
           </table>
@@ -846,9 +836,13 @@ function getWeekStart(): string {
 }
 
 function getNextMondayFromWeek(weekStart: string): string {
+  return addWeeks(weekStart, 1)
+}
+
+function addWeeks(weekStart: string, weeks: number): string {
   const [y, m, d] = weekStart.split('-').map(Number)
   const date = new Date(y, m - 1, d)
-  date.setDate(date.getDate() + 7)
+  date.setDate(date.getDate() + 7 * weeks)
   return formatLocalDate(date)
 }
 
@@ -884,4 +878,70 @@ function formatDate(date: string): string {
 function formatTimeRange(startTime: string | null, endTime: string | null): string {
   if (!startTime && !endTime) return '未設定'
   return `${startTime ?? '--:--'} - ${endTime ?? '--:--'}`
+}
+
+function ShiftTableRow({ shift, staff, properties, onConfirm, onComplete, onEdit, onDelete }: {
+  shift: ShiftRow
+  staff: Staff[]
+  properties: Property[]
+  onConfirm: (id: string, status: Shift['status']) => Promise<void>
+  onComplete: (id: string, status: Shift['status']) => Promise<void>
+  onEdit: (shift: ShiftRow) => void
+  onDelete: (shift: ShiftRow) => Promise<void>
+}): JSX.Element {
+  return (
+    <tr className="hover:bg-gray-50">
+      <td className="px-4 py-3">
+        <p className="text-sm font-medium text-gray-900">{shift.staff_name ?? staff.find((m) => m.id === shift.staff_id)?.name ?? '未設定'}</p>
+      </td>
+      <td className="px-4 py-3 text-sm text-gray-600">
+        {shift.property_name ?? properties.find((p) => p.id === shift.property_id)?.name ?? '未設定'}
+      </td>
+      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatDate(shift.date)}</td>
+      <td className="px-4 py-3 text-sm text-gray-600">{TASK_LABEL[shift.task_type]}</td>
+      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{formatTimeRange(shift.start_time, shift.end_time)}</td>
+      <td className="px-4 py-3">
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_BADGE[shift.status]}`}>
+          {shift.status}
+        </span>
+      </td>
+      <td className="px-4 py-3">
+        <div className="flex flex-wrap justify-end gap-2">
+          {(shift.status === 'proposed' || shift.status === 'notified') && (
+            <button
+              type="button"
+              onClick={() => void onConfirm(shift.id, 'confirmed')}
+              className="rounded-lg px-3 py-2 text-sm font-medium text-white hover:opacity-90"
+              style={{ backgroundColor: '#06C755' }}
+            >
+              確定
+            </button>
+          )}
+          {shift.status !== 'completed' && shift.status !== 'cancelled' && (
+            <button
+              type="button"
+              onClick={() => void onComplete(shift.id, 'completed')}
+              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+            >
+              完了
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onEdit(shift)}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            編集
+          </button>
+          <button
+            type="button"
+            onClick={() => void onDelete(shift)}
+            className="rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+          >
+            削除
+          </button>
+        </div>
+      </td>
+    </tr>
+  )
 }

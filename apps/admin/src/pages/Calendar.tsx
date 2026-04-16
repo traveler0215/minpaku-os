@@ -55,6 +55,7 @@ export function CalendarPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7))
+  const [isDeletingReservation, setIsDeletingReservation] = useState(false)
   const [shiftStaffId, setShiftStaffId] = useState('')
   const [shiftTaskType, setShiftTaskType] = useState<Shift['task_type']>('cleaning')
   const [shiftStartTime, setShiftStartTime] = useState('')
@@ -82,6 +83,23 @@ export function CalendarPage(): JSX.Element {
 
     void load()
   }, [token, currentMonth])
+
+  async function handleDeleteReservation(reservation: Reservation): Promise<void> {
+    if (!token || !window.confirm(`この予約を削除しますか？\n${propertyName(properties, reservation.property_id)} / ${reservation.guest_name ?? 'ゲスト未設定'}\n${reservation.checkin_date} → ${reservation.checkout_date}`)) return
+    setIsDeletingReservation(true)
+    setError(null)
+    setMessage(null)
+    try {
+      await apiFetch(`/api/reservations/${reservation.id}`, { method: 'DELETE' }, token)
+      setMessage('予約を削除しました')
+      setSelected(null)
+      setReservations((prev) => prev.filter((r) => r.id !== reservation.id))
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '予約の削除に失敗しました')
+    } finally {
+      setIsDeletingReservation(false)
+    }
+  }
 
   async function handleSendShift(reservation: Reservation): Promise<void> {
     if (!token || !shiftStaffId) return
@@ -178,7 +196,7 @@ export function CalendarPage(): JSX.Element {
               <Row label="OTA" value={platformLabel(selected.platform)} />
               <Row label="状態" value={selected.status} />
               {selected.notes && <Row label="メモ" value={selected.notes} />}
-              <div className="flex gap-2 pt-3 border-t border-gray-100 mt-3">
+              <div className="flex flex-wrap gap-2 pt-3 border-t border-gray-100 mt-3">
                 <Link
                   to="/reservations"
                   className="rounded-lg px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
@@ -192,6 +210,14 @@ export function CalendarPage(): JSX.Element {
                 >
                   メッセージ作成
                 </Link>
+                <button
+                  type="button"
+                  disabled={isDeletingReservation}
+                  onClick={() => void handleDeleteReservation(selected)}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
+                >
+                  {isDeletingReservation ? '削除中...' : '削除'}
+                </button>
               </div>
 
               {selected.status !== 'blocked' && selected.status !== 'cancelled' && (
