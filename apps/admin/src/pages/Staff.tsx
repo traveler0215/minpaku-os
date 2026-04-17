@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../lib/auth'
 import { apiFetch } from '../lib/api'
-import type { Property, Staff } from '../lib/types'
+import type { Property, Staff, StaffAutoMessage } from '../lib/types'
 
 const inputClassName = 'w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm outline-none focus:border-[#06C755] focus:ring-2 focus:ring-[#06C755]/20'
 
@@ -13,6 +13,22 @@ type MessageTarget =
 interface MessageDraft {
   target: MessageTarget
   text: string
+}
+
+const AUTO_ROLES: { value: Staff['role']; label: string }[] = [
+  { value: 'cleaner', label: '清掃スタッフ' },
+  { value: 'checkin', label: 'チェックイン担当' },
+  { value: 'manager', label: 'マネージャー' },
+]
+
+const AUTO_EVENTS: { value: StaffAutoMessage['event_type']; label: string; hint: string }[] = [
+  { value: 'shift_accept',   label: 'シフト承諾時',   hint: 'スタッフが「OK」または承諾ボタンを押したときに返信' },
+  { value: 'shift_complete', label: 'シフト完了時',   hint: 'スタッフが「完了」を送ったときに返信（未チェック項目がある場合は別メッセージ）' },
+  { value: 'shift_decline',  label: 'シフト辞退時',   hint: 'スタッフが「NG」または辞退ボタンを押したときに返信' },
+]
+
+function autoKey(role: Staff['role'], event: StaffAutoMessage['event_type']): string {
+  return `${role}:${event}`
 }
 
 export function StaffPage(): JSX.Element {
@@ -27,6 +43,9 @@ export function StaffPage(): JSX.Element {
   const [inviteCode, setInviteCode] = useState<string | null>(null)
   const [messageDraft, setMessageDraft] = useState<MessageDraft | null>(null)
   const [sendingMessage, setSendingMessage] = useState(false)
+  const [autoMessages, setAutoMessages] = useState<Record<string, string>>({})
+  const [autoMessagesSaving, setAutoMessagesSaving] = useState<Record<string, boolean>>({})
+  const [autoMessagesOpen, setAutoMessagesOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
 
@@ -47,6 +66,44 @@ export function StaffPage(): JSX.Element {
       setError(nextError instanceof Error ? nextError.message : 'スタッフ情報の取得に失敗しました。')
     })
   }, [token])
+
+  async function loadAutoMessages(): Promise<void> {
+    if (!token) return
+    try {
+      const rows = await apiFetch<StaffAutoMessage[]>('/api/staff-auto-messages', undefined, token)
+      setAutoMessages(Object.fromEntries(rows.map((row) => [autoKey(row.role, row.event_type), row.body_text])))
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : '自動送信メッセージの取得に失敗しました。')
+    }
+  }
+
+  useEffect(() => {
+    void loadAutoMessages()
+  }, [token])
+
+  async function saveAutoMessage(role: Staff['role'], eventType: StaffAutoMessage['event_type']): Promise<void> {
+    if (!token) return
+    const key = autoKey(role, eventType)
+    const body = (autoMessages[key] ?? '').trim()
+    if (!body) {
+      setError('メッセージが空です。')
+      return
+    }
+    setAutoMessagesSaving((current) => ({ ...current, [key]: true }))
+    try {
+      setError(null)
+      setMessage(null)
+      await apiFetch<StaffAutoMessage>('/api/staff-auto-messages', {
+        method: 'PATCH',
+        body: JSON.stringify({ role, event_type: eventType, body_text: body }),
+      }, token)
+      setMessage('自動送信メッセージを更新しました。')
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'メッセージの保存に失敗しました。')
+    } finally {
+      setAutoMessagesSaving((current) => ({ ...current, [key]: false }))
+    }
+  }
 
   async function handleInvite(): Promise<void> {
     if (!token || !inviteName.trim()) return
@@ -469,6 +526,60 @@ export function StaffPage(): JSX.Element {
               </table>
             </div>
           </>
+        )}
+      </div>
+
+      {/* 自動送信メッセージ設定 */}
+      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
+        <button
+          type="button"
+          onClick={() => setAutoMessagesOpen((v) => !v)}
+          className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-gray-50 sm:px-5 sm:py-4"
+        >
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">自動送信メッセージ設定</h2>
+            <p className="mt-1 text-xs text-gray-500">スタッフ種別ごとに「承諾/完了/辞退」時のLINE返信文を編集できます</p>
+          </div>
+          <span className="text-gray-400">{autoMessagesOpen ? '▲' : '▼'}</span>
+        </button>
+        {autoMessagesOpen && (
+          <div className="border-t border-gray-200 p-4 sm:p-5">
+            <div className="grid gap-4 md:grid-cols-3">
+              {AUTO_ROLES.map((roleDef) => (
+                <div key={roleDef.value} className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-sm font-semibold text-gray-900">{roleDef.label}</p>
+                  {AUTO_EVENTS.map((eventDef) => {
+                    const key = autoKey(roleDef.value, eventDef.value)
+                    const value = autoMessages[key] ?? ''
+                    const saving = autoMessagesSaving[key]
+                    return (
+                      <div key={eventDef.value} className="space-y-1 rounded-md bg-white p-3 ring-1 ring-gray-200">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs font-semibold text-gray-700">{eventDef.label}</p>
+                          <button
+                            type="button"
+                            onClick={() => void saveAutoMessage(roleDef.value, eventDef.value)}
+                            disabled={saving || !value.trim()}
+                            className="rounded-md px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                            style={{ backgroundColor: '#06C755' }}
+                          >
+                            {saving ? '保存中…' : '保存'}
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-gray-500">{eventDef.hint}</p>
+                        <textarea
+                          className={`${inputClassName} min-h-24 text-xs`}
+                          value={value}
+                          maxLength={2000}
+                          onChange={(e) => setAutoMessages((current) => ({ ...current, [key]: e.target.value }))}
+                        />
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </div>
 

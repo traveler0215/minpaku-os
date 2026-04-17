@@ -10,6 +10,7 @@ import { authRoutes } from './routes/auth'
 import { adminUserRoutes } from './routes/admin-users'
 import { checklistRoutes } from './routes/checklist'
 import { templateRoutes } from './routes/templates'
+import { staffAutoMessageRoutes } from './routes/staff-auto-messages'
 import { analyticsRoutes } from './routes/analytics'
 import { handleIcalFeed } from './routes/ical-feed'
 import { guestRoutes } from './routes/guests'
@@ -58,6 +59,7 @@ export default {
       if (pathname.endsWith('/guests'))             return withCors(await guestRoutes(request, env))
       if (pathname.startsWith('/api/guests/'))      return withCors(await guestRoutes(request, env))
       if (pathname.startsWith('/api/reservations')) return withCors(await reservationRoutes(request, env))
+      if (pathname === '/api/staff-auto-messages') return withCors(await staffAutoMessageRoutes(request, env))
       if (pathname.startsWith('/api/staff'))        return withCors(await staffRoutes(request, env))
       if (pathname.startsWith('/api/shifts'))       return withCors(await shiftRoutes(request, env))
       if (pathname.startsWith('/api/properties'))   return withCors(await propertyRoutes(request, env))

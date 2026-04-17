@@ -123,6 +123,13 @@ export interface MessageTemplate {
   updated_at: string
 }
 
+export interface StaffAutoMessage {
+  role: 'cleaner' | 'checkin' | 'manager'
+  event_type: 'shift_accept' | 'shift_complete' | 'shift_decline'
+  body_text: string
+  updated_at: string
+}
+
 export interface AdminUser {
   id: string
   email: string

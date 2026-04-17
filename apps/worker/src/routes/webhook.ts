@@ -39,6 +39,34 @@ const OWNER_LINE_ID_KEY = 'owner_line_user_id'
 const SHIFT_COLLECTION_ACTIVE_KEY = 'shift_collection_active'
 const SHIFT_COLLECTION_WEEK_KEY = 'shift_collection_week_start'
 
+type AutoEvent = 'shift_accept' | 'shift_complete' | 'shift_decline'
+
+const DEFAULT_AUTO_MESSAGES: Record<Staff['role'], Record<AutoEvent, string>> = {
+  cleaner: {
+    shift_accept: 'シフトを承諾しました。\n清掃が完了したら「完了」と清掃後の写真をこちらのLINEで送ってください。',
+    shift_complete: '完了を記録しました。清掃後の写真があれば続けて送信してください。',
+    shift_decline: '辞退を受け付けました。次のスタッフへ確認します。',
+  },
+  checkin: {
+    shift_accept: 'シフトを承諾しました。\nチェックイン対応が完了したら「完了」と送ってください。',
+    shift_complete: '完了を記録しました。お疲れさまでした。',
+    shift_decline: '辞退を受け付けました。次のスタッフへ確認します。',
+  },
+  manager: {
+    shift_accept: 'シフトを承諾しました。完了したら「完了」と送ってください。',
+    shift_complete: '完了を記録しました。お疲れさまでした。',
+    shift_decline: '辞退を受け付けました。',
+  },
+}
+
+async function getAutoMessage(env: Env, role: Staff['role'], event: AutoEvent): Promise<string> {
+  const row = await env.DB
+    .prepare('SELECT body_text FROM staff_auto_messages WHERE role = ? AND event_type = ?')
+    .bind(role, event)
+    .first<{ body_text: string }>()
+  return row?.body_text?.trim() || DEFAULT_AUTO_MESSAGES[role][event]
+}
+
 export async function handleLineWebhook(
   request: Request,
   env: Env,
@@ -157,11 +185,10 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
 
   if (normalized === 'ok') {
     const confirmed = await confirmLatestShiftForStaff(env, staff)
+    const acceptMsg = await getAutoMessage(env, staff.role, 'shift_accept')
     await replyText(
       event.replyToken!,
-      confirmed
-        ? 'シフトを承諾しました。完了したら「完了」と写真を送ってください。'
-        : '承諾待ちのシフトが見つかりませんでした。',
+      confirmed ? acceptMsg : '承諾待ちのシフトが見つかりませんでした。',
       env.LINE_STAFF_ACCESS_TOKEN
     )
     return
@@ -169,11 +196,10 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
 
   if (normalized === 'ng') {
     const declined = await declineLatestShiftForStaff(env, staff)
+    const declineMsg = await getAutoMessage(env, staff.role, 'shift_decline')
     await replyText(
       event.replyToken!,
-      declined
-        ? '辞退を受け付けました。次のスタッフへ確認します。'
-        : '辞退対象のシフトが見つかりませんでした。',
+      declined ? declineMsg : '辞退対象のシフトが見つかりませんでした。',
       env.LINE_STAFF_ACCESS_TOKEN
     )
     return
@@ -184,9 +210,10 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
     if (completed) {
       // チェックリスト未完了チェック
       const unchecked = await getUncheckedItems(env, staff.id)
+      const completeMsg = await getAutoMessage(env, staff.role, 'shift_complete')
       const msg = unchecked.length > 0
         ? `完了を記録しました。\n\n⚠️ 未チェック項目:\n${unchecked.map(i => `・${i.label}`).join('\n')}\n\n確認の上、写真を送信してください。`
-        : '完了を記録しました。写真があれば続けて送信してください。'
+        : completeMsg
       await replyText(event.replyToken!, msg, env.LINE_STAFF_ACCESS_TOKEN)
     } else {
       await replyText(event.replyToken!, '完了対象のシフトが見つかりませんでした。', env.LINE_STAFF_ACCESS_TOKEN)
@@ -358,23 +385,20 @@ async function handlePostbackEvent(event: LineEvent, env: Env): Promise<void> {
     return
   }
 
+  const staff = event.source.userId ? await findStaffByLineUserId(env, event.source.userId) : null
+  const role: Staff['role'] = staff?.role ?? 'cleaner'
+
   if (params.action === 'confirm_shift') {
     await confirmShift(env, shift)
-    await replyText(
-      event.replyToken,
-      'シフトを承諾しました。完了したら「完了」と写真を送ってください。',
-      env.LINE_STAFF_ACCESS_TOKEN
-    )
+    const msg = await getAutoMessage(env, role, 'shift_accept')
+    await replyText(event.replyToken, msg, env.LINE_STAFF_ACCESS_TOKEN)
     return
   }
 
   if (params.action === 'decline_shift') {
     await declineShift(env, shift)
-    await replyText(
-      event.replyToken,
-      '辞退を受け付けました。次のスタッフへ確認します。',
-      env.LINE_STAFF_ACCESS_TOKEN
-    )
+    const msg = await getAutoMessage(env, role, 'shift_decline')
+    await replyText(event.replyToken, msg, env.LINE_STAFF_ACCESS_TOKEN)
   }
 }
 
