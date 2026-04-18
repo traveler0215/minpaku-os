@@ -158,14 +158,13 @@ export function CalendarPage(): JSX.Element {
             height="auto"
             locale={jaLocale}
             events={reservations
-              .filter((r) => r.status !== 'cancelled')
+              .filter((r) => r.status !== 'cancelled' && r.status !== 'blocked')
               .map((reservation) => ({
                 id: reservation.id,
                 title: eventTitle(reservation, propertyName(properties, reservation.property_id)),
                 start: reservation.checkin_date,
                 end: reservation.checkout_date,
                 color: eventColor(reservation, properties),
-                ...(reservation.status === 'blocked' ? { display: 'background' } : {}),
               }))}
             datesSet={(arg: DatesSetArg) => {
               // currentStartは表示開始日（前月末の場合あり）なので、中間日で月を判定

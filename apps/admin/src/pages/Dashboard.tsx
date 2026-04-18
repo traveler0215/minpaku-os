@@ -61,8 +61,9 @@ export function DashboardPage(): JSX.Element {
   }, [token])
 
   const today = new Date().toISOString().slice(0, 10)
-  const todayCheckins = reservations.filter((r) => r.checkin_date === today)
-  const todayCheckouts = reservations.filter((r) => r.checkout_date === today)
+  const activeReservations = reservations.filter((r) => r.status !== 'blocked' && r.status !== 'cancelled')
+  const todayCheckins = activeReservations.filter((r) => r.checkin_date === today)
+  const todayCheckouts = activeReservations.filter((r) => r.checkout_date === today)
 
   return (
     <div className="space-y-6">
@@ -77,7 +78,7 @@ export function DashboardPage(): JSX.Element {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="物件数" value={properties.length} icon="🏢" color="bg-green-100 text-green-700" />
-        <StatCard label="今月の予約" value={reservations.length} icon="📋" color="bg-blue-100 text-blue-700" />
+        <StatCard label="今月の予約" value={activeReservations.length} icon="📋" color="bg-blue-100 text-blue-700" />
         <StatCard label="本日チェックイン" value={todayCheckins.length} icon="🔑" color="bg-amber-100 text-amber-700" />
         <StatCard label="本日チェックアウト" value={todayCheckouts.length} icon="🧳" color="bg-purple-100 text-purple-700" />
       </div>
