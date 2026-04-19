@@ -40,7 +40,7 @@ export async function verifyAdminToken(
  * JWT 生成（ログイン時）
  */
 export async function generateJwt(
-  payload: { email: string; role: string; name: string },
+  payload: { email: string; role: string; name: string; tenant_id?: string },
   secret: string,
   expiresInSec = 86400  // 24時間
 ): Promise<string> {
@@ -57,7 +57,7 @@ export async function generateJwt(
 export async function verifyJwt(
   token: string,
   secret: string
-): Promise<{ email: string; role: string; name: string; exp: number } | null> {
+): Promise<{ email: string; role: string; name: string; tenant_id?: string; exp: number } | null> {
   const parts = token.split('.')
   if (parts.length !== 3) return null
 
@@ -68,6 +68,34 @@ export async function verifyJwt(
   const payload = JSON.parse(atob(body.replace(/-/g, '+').replace(/_/g, '/')))
   if (payload.exp < Math.floor(Date.now() / 1000)) return null
   return payload
+}
+
+/**
+ * リクエストから現在のテナント・認証情報を取得する。
+ * 既存JWT（tenant_id無し）の場合は 'default' テナントにフォールバック。
+ *
+ * 使用例:
+ *   const ctx = await getTenantContext(request, env)
+ *   if (!ctx) return unauthorized()
+ *   db.prepare('SELECT ... WHERE tenant_id = ?').bind(ctx.tenant_id)
+ */
+export async function getTenantContext(
+  request: Request,
+  env: Env
+): Promise<{ tenant_id: string; email: string; role: string; name: string } | null> {
+  const auth = request.headers.get('Authorization')
+  if (!auth?.startsWith('Bearer ')) return null
+
+  const token = auth.slice(7)
+  const payload = await verifyJwt(token, env.ADMIN_JWT_SECRET)
+  if (!payload) return null
+
+  return {
+    tenant_id: payload.tenant_id ?? 'default',
+    email: payload.email,
+    role: payload.role,
+    name: payload.name,
+  }
 }
 
 /**
