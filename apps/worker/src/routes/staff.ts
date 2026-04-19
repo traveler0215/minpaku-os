@@ -7,6 +7,7 @@ import {
   unlinkRichMenuFromUser,
   setDefaultRichMenu,
 } from '../lib/line'
+import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, Shift, Staff } from '../types'
 
 interface StaffPatchInput {
@@ -40,52 +41,56 @@ interface BroadcastInput {
 const INVITE_TTL = 60 * 60 * 24
 
 export async function staffRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const url = new URL(request.url)
   const { pathname, searchParams } = url
 
   if (pathname === '/api/staff') {
-    if (request.method === 'GET') return handleListStaff(env, searchParams)
+    if (request.method === 'GET') return handleListStaff(env, tenantId, searchParams)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (pathname === '/api/staff/invite') {
-    if (request.method === 'POST') return handleInviteStaff(request, env)
+    if (request.method === 'POST') return handleInviteStaff(request, env, tenantId)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (pathname === '/api/staff/setup-richmenu') {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleSetupRichMenu(env)
+    return handleSetupRichMenu(env, tenantId)
   }
 
   if (pathname === '/api/staff/broadcast') {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleBroadcastMessage(request, env)
+    return handleBroadcastMessage(request, env, tenantId)
   }
 
   if (pathname.endsWith('/shifts') && pathname.startsWith('/api/staff/')) {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
     const staffId = pathname.slice('/api/staff/'.length, -'/shifts'.length)
-    return handleGetStaffShifts(env, staffId, searchParams)
+    return handleGetStaffShifts(env, tenantId, staffId, searchParams)
   }
 
   if (pathname.endsWith('/message') && pathname.startsWith('/api/staff/')) {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
     const staffId = pathname.slice('/api/staff/'.length, -'/message'.length)
-    return handleSendStaffMessage(request, env, staffId)
+    return handleSendStaffMessage(request, env, tenantId, staffId)
   }
 
   const staffId = getIdFromPath(pathname, '/api/staff/')
   if (staffId) {
-    if (request.method === 'PATCH') return handlePatchStaff(request, env, staffId)
-    if (request.method === 'DELETE') return handleDeleteStaff(env, staffId)
+    if (request.method === 'PATCH') return handlePatchStaff(request, env, tenantId, staffId)
+    if (request.method === 'DELETE') return handleDeleteStaff(env, tenantId, staffId)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListStaff(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleListStaff(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const propertyId = searchParams.get('property_id')?.trim()
   const includeInactive = searchParams.get('include_inactive') === 'true'
   const rows = propertyId
@@ -93,33 +98,36 @@ async function handleListStaff(env: Env, searchParams: URLSearchParams): Promise
         .prepare(`
           SELECT s.*
           FROM staff s
-          JOIN staff_properties sp ON sp.staff_id = s.id
+          JOIN staff_properties sp ON sp.staff_id = s.id AND sp.tenant_id = s.tenant_id
           WHERE sp.property_id = ?
+            AND s.tenant_id = ?
             ${includeInactive ? '' : 'AND s.is_active = 1'}
           ORDER BY s.is_active DESC, s.name ASC
         `)
-        .bind(propertyId)
+        .bind(propertyId, tenantId)
         .all<Staff>()
     : await env.DB
         .prepare(`
           SELECT *
           FROM staff
-          ${includeInactive ? '' : 'WHERE is_active = 1'}
+          WHERE tenant_id = ?
+            ${includeInactive ? '' : 'AND is_active = 1'}
           ORDER BY is_active DESC, name ASC
         `)
+        .bind(tenantId)
         .all<Staff>()
 
   const staffWithProperties = await Promise.all(
     rows.results.map(async (staff) => ({
       ...staff,
-      property_ids: await getStaffPropertyIds(env, staff.id),
+      property_ids: await getStaffPropertyIds(env, tenantId, staff.id),
     }))
   )
 
   return jsonOk(staffWithProperties)
 }
 
-async function handleInviteStaff(request: Request, env: Env): Promise<Response> {
+async function handleInviteStaff(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<InviteInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -136,6 +144,7 @@ async function handleInviteStaff(request: Request, env: Env): Promise<Response> 
 
   const code = generateInviteCode()
   const invite = {
+    tenant_id: tenantId,
     name,
     role,
     employment_type: employmentType,
@@ -153,8 +162,8 @@ async function handleInviteStaff(request: Request, env: Env): Promise<Response> 
   })
 }
 
-async function handlePatchStaff(request: Request, env: Env, staffId: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT * FROM staff WHERE id = ?').bind(staffId).first<Staff>()
+async function handlePatchStaff(request: Request, env: Env, tenantId: string, staffId: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').bind(staffId, tenantId).first<Staff>()
   if (!existing) return jsonError('スタッフが見つかりません', 404)
 
   const payload = await safeJson<StaffPatchInput>(request)
@@ -178,14 +187,14 @@ async function handlePatchStaff(request: Request, env: Env, staffId: string): Pr
     .prepare(`
       UPDATE staff
       SET name = ?, role = ?, employment_type = ?, hourly_wage = ?, wage_type = ?, is_active = ?, updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(name, role, employmentType, hourlyWage, wageType, isActive, staffId)
+    .bind(name, role, employmentType, hourlyWage, wageType, isActive, staffId, tenantId)
     .run()
 
   // リッチメニューの差し替え（roleが変更された場合）
   if (payload.role !== undefined && payload.role !== existing.role) {
-    const staffRow = await env.DB.prepare('SELECT line_user_id FROM staff WHERE id = ?').bind(staffId).first<{ line_user_id: string | null }>()
+    const staffRow = await env.DB.prepare('SELECT line_user_id FROM staff WHERE id = ? AND tenant_id = ?').bind(staffId, tenantId).first<{ line_user_id: string | null }>()
     if (staffRow?.line_user_id) {
       const richMenuId = await env.KV.get(`richmenu:${payload.role}`)
       if (richMenuId) {
@@ -205,24 +214,24 @@ async function handlePatchStaff(request: Request, env: Env, staffId: string): Pr
 
   if (payload.property_ids) {
     const propertyIds = payload.property_ids.map((id) => id.trim()).filter(Boolean)
-    await env.DB.prepare('DELETE FROM staff_properties WHERE staff_id = ?').bind(staffId).run()
+    await env.DB.prepare('DELETE FROM staff_properties WHERE staff_id = ? AND tenant_id = ?').bind(staffId, tenantId).run()
     for (const propertyId of propertyIds) {
       await env.DB
-        .prepare('INSERT INTO staff_properties (staff_id, property_id) VALUES (?, ?)')
-        .bind(staffId, propertyId)
+        .prepare('INSERT INTO staff_properties (tenant_id, staff_id, property_id) VALUES (?, ?, ?)')
+        .bind(tenantId, staffId, propertyId)
         .run()
     }
   }
 
-  const updated = await env.DB.prepare('SELECT * FROM staff WHERE id = ?').bind(staffId).first<Staff>()
+  const updated = await env.DB.prepare('SELECT * FROM staff WHERE id = ? AND tenant_id = ?').bind(staffId, tenantId).first<Staff>()
   return jsonOk({
     ...updated,
-    property_ids: await getStaffPropertyIds(env, staffId),
+    property_ids: await getStaffPropertyIds(env, tenantId, staffId),
   })
 }
 
-async function handleDeleteStaff(env: Env, staffId: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT id, line_user_id FROM staff WHERE id = ?').bind(staffId).first<{ id: string; line_user_id: string | null }>()
+async function handleDeleteStaff(env: Env, tenantId: string, staffId: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT id, line_user_id FROM staff WHERE id = ? AND tenant_id = ?').bind(staffId, tenantId).first<{ id: string; line_user_id: string | null }>()
   if (!existing) return jsonError('スタッフが見つかりません', 404)
 
   // リッチメニュー解除
@@ -238,15 +247,15 @@ async function handleDeleteStaff(env: Env, staffId: string): Promise<Response> {
     .prepare(`
       UPDATE staff
       SET is_active = 0, updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(staffId)
+    .bind(staffId, tenantId)
     .run()
 
   return jsonOk({ id: staffId, is_active: 0 })
 }
 
-async function handleSendStaffMessage(request: Request, env: Env, staffId: string): Promise<Response> {
+async function handleSendStaffMessage(request: Request, env: Env, tenantId: string, staffId: string): Promise<Response> {
   const payload = await safeJson<MessageInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -255,8 +264,8 @@ async function handleSendStaffMessage(request: Request, env: Env, staffId: strin
   if (text.length > 5000) return jsonError('text は5000文字以内にしてください', 400)
 
   const staff = await env.DB
-    .prepare('SELECT id, name, line_user_id, is_active FROM staff WHERE id = ?')
-    .bind(staffId)
+    .prepare('SELECT id, name, line_user_id, is_active FROM staff WHERE id = ? AND tenant_id = ?')
+    .bind(staffId, tenantId)
     .first<{ id: string; name: string; line_user_id: string; is_active: number }>()
 
   if (!staff) return jsonError('スタッフが見つかりません', 404)
@@ -277,7 +286,7 @@ async function handleSendStaffMessage(request: Request, env: Env, staffId: strin
   })
 }
 
-async function handleBroadcastMessage(request: Request, env: Env): Promise<Response> {
+async function handleBroadcastMessage(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<BroadcastInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -295,14 +304,14 @@ async function handleBroadcastMessage(request: Request, env: Env): Promise<Respo
   let bindings: string[]
   if (staffIds.length > 0) {
     const placeholders = staffIds.map(() => '?').join(',')
-    query = `SELECT id, name, line_user_id FROM staff WHERE id IN (${placeholders}) AND is_active = 1 AND line_user_id IS NOT NULL`
-    bindings = staffIds
+    query = `SELECT id, name, line_user_id FROM staff WHERE id IN (${placeholders}) AND tenant_id = ? AND is_active = 1 AND line_user_id IS NOT NULL`
+    bindings = [...staffIds, tenantId]
   } else if (role && role !== 'all') {
-    query = 'SELECT id, name, line_user_id FROM staff WHERE role = ? AND is_active = 1 AND line_user_id IS NOT NULL'
-    bindings = [role]
+    query = 'SELECT id, name, line_user_id FROM staff WHERE role = ? AND tenant_id = ? AND is_active = 1 AND line_user_id IS NOT NULL'
+    bindings = [role, tenantId]
   } else {
-    query = 'SELECT id, name, line_user_id FROM staff WHERE is_active = 1 AND line_user_id IS NOT NULL'
-    bindings = []
+    query = 'SELECT id, name, line_user_id FROM staff WHERE tenant_id = ? AND is_active = 1 AND line_user_id IS NOT NULL'
+    bindings = [tenantId]
   }
 
   const rows = await env.DB
@@ -428,7 +437,7 @@ function buildCheckinRichMenu() {
   }
 }
 
-async function handleSetupRichMenu(env: Env): Promise<Response> {
+async function handleSetupRichMenu(env: Env, tenantId: string): Promise<Response> {
   const adminUrl = env.ADMIN_URL ?? 'https://minpaku-os-admin.pages.dev'
   const accessToken = env.LINE_STAFF_ACCESS_TOKEN
 
@@ -485,7 +494,8 @@ async function handleSetupRichMenu(env: Env): Promise<Response> {
 
   // 既存スタッフにリッチメニューをリンク
   const allStaff = await env.DB
-    .prepare('SELECT id, line_user_id, role FROM staff WHERE is_active = 1 AND line_user_id IS NOT NULL')
+    .prepare('SELECT id, line_user_id, role FROM staff WHERE tenant_id = ? AND is_active = 1 AND line_user_id IS NOT NULL')
+    .bind(tenantId)
     .all<{ id: string; line_user_id: string; role: Staff['role'] }>()
 
   let linked = 0
@@ -507,8 +517,8 @@ async function handleSetupRichMenu(env: Env): Promise<Response> {
   })
 }
 
-async function handleGetStaffShifts(env: Env, staffId: string, searchParams: URLSearchParams): Promise<Response> {
-  const staff = await env.DB.prepare('SELECT id FROM staff WHERE id = ?').bind(staffId).first<{ id: string }>()
+async function handleGetStaffShifts(env: Env, tenantId: string, staffId: string, searchParams: URLSearchParams): Promise<Response> {
+  const staff = await env.DB.prepare('SELECT id FROM staff WHERE id = ? AND tenant_id = ?').bind(staffId, tenantId).first<{ id: string }>()
   if (!staff) return jsonError('スタッフが見つかりません', 404)
 
   const week = searchParams.get('week')?.trim()
@@ -522,29 +532,31 @@ async function handleGetStaffShifts(env: Env, staffId: string, searchParams: URL
           SELECT *
           FROM shifts
           WHERE staff_id = ?
+            AND tenant_id = ?
             AND date >= ?
             AND date < date(?, '+7 days')
           ORDER BY date ASC, start_time ASC
         `)
-        .bind(staffId, week, week)
+        .bind(staffId, tenantId, week, week)
         .all<Shift>()
     : await env.DB
         .prepare(`
           SELECT *
           FROM shifts
           WHERE staff_id = ?
+            AND tenant_id = ?
           ORDER BY date DESC, start_time DESC
         `)
-        .bind(staffId)
+        .bind(staffId, tenantId)
         .all<Shift>()
 
   return jsonOk(rows.results)
 }
 
-async function getStaffPropertyIds(env: Env, staffId: string): Promise<string[]> {
+async function getStaffPropertyIds(env: Env, tenantId: string, staffId: string): Promise<string[]> {
   const rows = await env.DB
-    .prepare('SELECT property_id FROM staff_properties WHERE staff_id = ? ORDER BY property_id ASC')
-    .bind(staffId)
+    .prepare('SELECT property_id FROM staff_properties WHERE staff_id = ? AND tenant_id = ? ORDER BY property_id ASC')
+    .bind(staffId, tenantId)
     .all<{ property_id: string }>()
 
   return rows.results.map((row) => row.property_id)

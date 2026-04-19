@@ -10,7 +10,7 @@ interface VerifyInput {
   code?: string
 }
 
-type PublicAdminUser = Pick<AdminUser, 'id' | 'email' | 'name' | 'role' | 'is_active' | 'last_login' | 'created_at'>
+type PublicAdminUser = Pick<AdminUser, 'id' | 'tenant_id' | 'email' | 'name' | 'role' | 'is_active' | 'last_login' | 'created_at'>
 
 export async function authRoutes(request: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(request.url)
@@ -50,7 +50,7 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
 
   const adminUser = await env.DB
     .prepare(`
-      SELECT id, email, name, role, is_active, last_login, created_at
+      SELECT id, tenant_id, email, name, role, is_active, last_login, created_at
       FROM admin_users
       WHERE email = ?
       LIMIT 1
@@ -93,7 +93,7 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
 
   const adminUser = await env.DB
     .prepare(`
-      SELECT id, email, name, role, is_active, last_login, created_at
+      SELECT id, tenant_id, email, name, role, is_active, last_login, created_at
       FROM admin_users
       WHERE email = ?
       LIMIT 1
@@ -115,7 +115,7 @@ async function handleVerify(request: Request, env: Env): Promise<Response> {
     .run()
 
   const token = await generateJwt(
-    { email: adminUser.email, role: adminUser.role, name: adminUser.name },
+    { email: adminUser.email, role: adminUser.role, name: adminUser.name, tenant_id: adminUser.tenant_id },
     env.ADMIN_JWT_SECRET
   )
 
@@ -149,7 +149,7 @@ async function handleMe(request: Request, env: Env): Promise<Response> {
 
   const adminUser = await env.DB
     .prepare(`
-      SELECT id, email, name, role, is_active, last_login, created_at
+      SELECT id, tenant_id, email, name, role, is_active, last_login, created_at
       FROM admin_users
       WHERE email = ?
       LIMIT 1
@@ -173,7 +173,7 @@ async function handleInvite(env: Env, inviteToken: string): Promise<Response> {
   const { user_id, email } = JSON.parse(raw) as { user_id: string; email: string }
 
   const adminUser = await env.DB
-    .prepare('SELECT id, email, name, role, is_active, last_login, created_at FROM admin_users WHERE id = ? AND is_active = 1')
+    .prepare('SELECT id, tenant_id, email, name, role, is_active, last_login, created_at FROM admin_users WHERE id = ? AND is_active = 1')
     .bind(user_id)
     .first<PublicAdminUser>()
 
@@ -184,12 +184,12 @@ async function handleInvite(env: Env, inviteToken: string): Promise<Response> {
   await env.DB.prepare('UPDATE admin_users SET last_login = datetime(\'now\') WHERE id = ?').bind(user_id).run()
 
   const jwt = await generateJwt(
-    { email: adminUser.email, role: adminUser.role, name: adminUser.name },
+    { email: adminUser.email, role: adminUser.role, name: adminUser.name, tenant_id: adminUser.tenant_id },
     env.ADMIN_JWT_SECRET,
   )
 
   const refreshedUser = await env.DB
-    .prepare('SELECT id, email, name, role, is_active, last_login, created_at FROM admin_users WHERE id = ?')
+    .prepare('SELECT id, tenant_id, email, name, role, is_active, last_login, created_at FROM admin_users WHERE id = ?')
     .bind(user_id)
     .first<PublicAdminUser>()
 

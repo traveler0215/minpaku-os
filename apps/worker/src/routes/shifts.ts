@@ -1,3 +1,4 @@
+import { getTenantContext } from '../lib/auth'
 import { formatDateJa, pushButtonLink, pushConfirm, pushText } from '../lib/line'
 import type { ApiResponse, Env, Reservation, Shift, ShiftRequest } from '../types'
 
@@ -74,8 +75,8 @@ interface PropertyReservationInfo {
 export async function shiftRoutes(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url)
   const { pathname, searchParams } = url
-  const shiftId = getIdFromPath(pathname, '/api/shifts/')
 
+  // LIFF エンドポイント: 管理者JWT不要、staff の line_user_id から tenant_id を導出
   if (pathname === '/api/shift-requests') {
     if (request.method !== 'POST') {
       return jsonError('Method Not Allowed', 405)
@@ -83,25 +84,31 @@ export async function shiftRoutes(request: Request, env: Env): Promise<Response>
     return handleCreateShiftRequest(request, env)
   }
 
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
+  const shiftId = getIdFromPath(pathname, '/api/shifts/')
+
   if (pathname === '/api/shifts') {
-    if (request.method === 'GET') return handleListShifts(env, searchParams)
-    if (request.method === 'POST') return handleCreateShift(request, env)
+    if (request.method === 'GET') return handleListShifts(env, tenantId, searchParams)
+    if (request.method === 'POST') return handleCreateShift(request, env, tenantId)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (pathname === '/api/shifts/propose') {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleProposeShifts(request, env)
+    return handleProposeShifts(request, env, tenantId)
   }
 
   if (pathname === '/api/shifts/confirm-all') {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleConfirmAllShifts(env, searchParams)
+    return handleConfirmAllShifts(env, tenantId, searchParams)
   }
 
   if (pathname === '/api/shifts/requests') {
-    if (request.method === 'GET') return handleListShiftRequests(env, searchParams)
-    if (request.method === 'POST') return handleUpsertShiftRequestAdmin(request, env)
+    if (request.method === 'GET') return handleListShiftRequests(env, tenantId, searchParams)
+    if (request.method === 'POST') return handleUpsertShiftRequestAdmin(request, env, tenantId)
     return jsonError('Method Not Allowed', 405)
   }
 
@@ -109,12 +116,12 @@ export async function shiftRoutes(request: Request, env: Env): Promise<Response>
     const requestId = pathname.slice('/api/shifts/requests/'.length)
     if (!requestId || requestId.includes('/')) return jsonError('Not Found', 404)
     if (request.method !== 'DELETE') return jsonError('Method Not Allowed', 405)
-    return handleDeleteShiftRequestAdmin(env, requestId)
+    return handleDeleteShiftRequestAdmin(env, tenantId, requestId)
   }
 
   if (shiftId) {
-    if (request.method === 'PATCH') return handlePatchShift(request, env, shiftId)
-    if (request.method === 'DELETE') return handleDeleteShift(env, shiftId)
+    if (request.method === 'PATCH') return handlePatchShift(request, env, tenantId, shiftId)
+    if (request.method === 'DELETE') return handleDeleteShift(env, tenantId, shiftId)
     return jsonError('Method Not Allowed', 405)
   }
 
@@ -148,19 +155,22 @@ async function handleCreateShiftRequest(request: Request, env: Env): Promise<Res
     return jsonError('week_start_date は月曜日を指定してください', 400)
   }
 
+  // LIFF 経由: staff の line_user_id から tenant_id を導出
   const staff = await env.DB
     .prepare(`
-      SELECT id, is_active
+      SELECT id, tenant_id, is_active
       FROM staff
       WHERE line_user_id = ?
       LIMIT 1
     `)
     .bind(lineUserId)
-    .first<{ id: string; is_active: number }>()
+    .first<{ id: string; tenant_id: string; is_active: number }>()
 
   if (!staff || staff.is_active !== 1) {
     return jsonError('スタッフが見つかりません', 404)
   }
+
+  const tenantId = staff.tenant_id
 
   const normalizedDates: string[] = []
   const timeMap: Record<string, { from: string; to: string }> = {}
@@ -195,15 +205,15 @@ async function handleCreateShiftRequest(request: Request, env: Env): Promise<Res
 
   await env.DB
     .prepare(`
-      INSERT INTO shift_requests (staff_id, week_start_date, available_dates_json, available_time_json, collected_at)
-      VALUES (?, ?, ?, ?, datetime('now'))
+      INSERT INTO shift_requests (tenant_id, staff_id, week_start_date, available_dates_json, available_time_json, collected_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(staff_id, week_start_date)
       DO UPDATE SET
         available_dates_json = excluded.available_dates_json,
         available_time_json = excluded.available_time_json,
         collected_at = datetime('now')
     `)
-    .bind(staff.id, weekStartDate, JSON.stringify(normalizedDates), JSON.stringify(timeMap))
+    .bind(tenantId, staff.id, weekStartDate, JSON.stringify(normalizedDates), JSON.stringify(timeMap))
     .run()
 
   return jsonOk({
@@ -225,7 +235,7 @@ interface ShiftRequestAdminInput {
   notify?: boolean
 }
 
-async function handleUpsertShiftRequestAdmin(request: Request, env: Env): Promise<Response> {
+async function handleUpsertShiftRequestAdmin(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<ShiftRequestAdminInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -246,8 +256,8 @@ async function handleUpsertShiftRequestAdmin(request: Request, env: Env): Promis
   }
 
   const staff = await env.DB
-    .prepare('SELECT id FROM staff WHERE id = ? AND is_active = 1')
-    .bind(staffId)
+    .prepare('SELECT id FROM staff WHERE id = ? AND tenant_id = ? AND is_active = 1')
+    .bind(staffId, tenantId)
     .first<{ id: string }>()
   if (!staff) return jsonError('スタッフが見つかりません', 404)
 
@@ -279,8 +289,8 @@ async function handleUpsertShiftRequestAdmin(request: Request, env: Env): Promis
 
   await env.DB
     .prepare(`
-      INSERT INTO shift_requests (staff_id, week_start_date, available_dates_json, available_time_json, notes, collected_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO shift_requests (tenant_id, staff_id, week_start_date, available_dates_json, available_time_json, notes, collected_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
       ON CONFLICT(staff_id, week_start_date)
       DO UPDATE SET
         available_dates_json = excluded.available_dates_json,
@@ -288,13 +298,13 @@ async function handleUpsertShiftRequestAdmin(request: Request, env: Env): Promis
         notes = excluded.notes,
         collected_at = datetime('now')
     `)
-    .bind(staffId, weekStartDate, JSON.stringify(normalizedDates), JSON.stringify(timeMap), notes)
+    .bind(tenantId, staffId, weekStartDate, JSON.stringify(normalizedDates), JSON.stringify(timeMap), notes)
     .run()
 
   let notifySent = false
   if (payload.notify === true) {
     try {
-      await notifyStaffAboutShiftRequest(env, staffId, weekStartDate, normalizedDates, timeMap)
+      await notifyStaffAboutShiftRequest(env, tenantId, staffId, weekStartDate, normalizedDates, timeMap)
       notifySent = true
     } catch (err) {
       console.error('notifyStaffAboutShiftRequest failed', err)
@@ -311,14 +321,15 @@ async function handleUpsertShiftRequestAdmin(request: Request, env: Env): Promis
 
 async function notifyStaffAboutShiftRequest(
   env: Env,
+  tenantId: string,
   staffId: string,
   weekStartDate: string,
   availableDates: string[],
   timeMap: Record<string, { from: string; to: string }>
 ): Promise<void> {
   const staff = await env.DB
-    .prepare('SELECT id, name, line_user_id FROM staff WHERE id = ?')
-    .bind(staffId)
+    .prepare('SELECT id, name, line_user_id FROM staff WHERE id = ? AND tenant_id = ?')
+    .bind(staffId, tenantId)
     .first<{ id: string; name: string; line_user_id: string }>()
   if (!staff || !staff.line_user_id) return
 
@@ -360,18 +371,18 @@ async function notifyStaffAboutShiftRequest(
   }
 }
 
-async function handleDeleteShiftRequestAdmin(env: Env, requestId: string): Promise<Response> {
+async function handleDeleteShiftRequestAdmin(env: Env, tenantId: string, requestId: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT id FROM shift_requests WHERE id = ?')
-    .bind(requestId)
+    .prepare('SELECT id FROM shift_requests WHERE id = ? AND tenant_id = ?')
+    .bind(requestId, tenantId)
     .first<{ id: string }>()
   if (!existing) return jsonError('シフト希望が見つかりません', 404)
 
-  await env.DB.prepare('DELETE FROM shift_requests WHERE id = ?').bind(requestId).run()
+  await env.DB.prepare('DELETE FROM shift_requests WHERE id = ? AND tenant_id = ?').bind(requestId, tenantId).run()
   return jsonOk({ id: requestId, deleted: true })
 }
 
-async function handleListShiftRequests(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleListShiftRequests(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const week = searchParams.get('week')?.trim() || getNextMonday()
   if (!isDate(week)) {
     return jsonError('week は YYYY-MM-DD 形式で指定してください', 400)
@@ -390,12 +401,13 @@ async function handleListShiftRequests(env: Env, searchParams: URLSearchParams):
         s.name AS staff_name,
         s.role AS staff_role
       FROM shift_requests sr
-      JOIN staff s ON s.id = sr.staff_id
-      WHERE sr.week_start_date = ?
+      JOIN staff s ON s.id = sr.staff_id AND s.tenant_id = sr.tenant_id
+      WHERE sr.tenant_id = ?
+        AND sr.week_start_date = ?
         AND s.is_active = 1
       ORDER BY sr.collected_at DESC
     `)
-    .bind(week)
+    .bind(tenantId, week)
     .all<{
       id: string
       staff_id: string
@@ -434,7 +446,7 @@ async function handleListShiftRequests(env: Env, searchParams: URLSearchParams):
   return jsonOk({ week_start_date: week, requests })
 }
 
-async function handleListShifts(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleListShifts(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const week = searchParams.get('week')?.trim()
   const month = searchParams.get('month')?.trim()
   const propertyId = searchParams.get('property_id')?.trim()
@@ -447,8 +459,8 @@ async function handleListShifts(env: Env, searchParams: URLSearchParams): Promis
     return jsonError('month は YYYY-MM 形式で指定してください', 400)
   }
 
-  const conditions: string[] = []
-  const bindings: string[] = []
+  const conditions: string[] = ['sh.tenant_id = ?']
+  const bindings: string[] = [tenantId]
 
   if (week) {
     conditions.push('sh.date >= ?')
@@ -468,7 +480,7 @@ async function handleListShifts(env: Env, searchParams: URLSearchParams): Promis
     bindings.push(staffId)
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const where = `WHERE ${conditions.join(' AND ')}`
   const rows = await env.DB
     .prepare(`
       SELECT
@@ -477,9 +489,9 @@ async function handleListShifts(env: Env, searchParams: URLSearchParams): Promis
         p.name AS property_name,
         r.guest_name AS guest_name
       FROM shifts sh
-      JOIN staff s ON s.id = sh.staff_id
-      JOIN properties p ON p.id = sh.property_id
-      LEFT JOIN reservations r ON r.id = sh.reservation_id
+      JOIN staff s ON s.id = sh.staff_id AND s.tenant_id = sh.tenant_id
+      JOIN properties p ON p.id = sh.property_id AND p.tenant_id = sh.tenant_id
+      LEFT JOIN reservations r ON r.id = sh.reservation_id AND r.tenant_id = sh.tenant_id
       ${where}
       ORDER BY sh.date ASC, sh.start_time ASC, sh.created_at ASC
     `)
@@ -489,7 +501,7 @@ async function handleListShifts(env: Env, searchParams: URLSearchParams): Promis
   return jsonOk(rows.results)
 }
 
-async function handleCreateShift(request: Request, env: Env): Promise<Response> {
+async function handleCreateShift(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<ShiftCreateInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -499,19 +511,20 @@ async function handleCreateShift(request: Request, env: Env): Promise<Response> 
     payload.status = 'notified'
   }
 
-  const validation = await validateShiftInput(env, payload)
+  const validation = await validateShiftInput(env, tenantId, payload)
   if (!validation.ok) return jsonError(validation.error, 400)
 
   const inserted = await env.DB
     .prepare(`
       INSERT INTO shifts (
-        staff_id, property_id, reservation_id, task_type, date,
+        tenant_id, staff_id, property_id, reservation_id, task_type, date,
         start_time, end_time, status, proposed_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', datetime('now'), datetime('now'))
       RETURNING *
     `)
     .bind(
+      tenantId,
       validation.value.staff_id,
       validation.value.property_id,
       validation.value.reservation_id,
@@ -526,7 +539,7 @@ async function handleCreateShift(request: Request, env: Env): Promise<Response> 
   let notifySent = false
   if (shouldNotify && inserted) {
     try {
-      await notifyStaffAboutShift(env, inserted, 'create')
+      await notifyStaffAboutShift(env, tenantId, inserted, 'create')
       notifySent = true
     } catch (err) {
       console.error('notifyStaffAboutShift (create) failed', err)
@@ -536,10 +549,10 @@ async function handleCreateShift(request: Request, env: Env): Promise<Response> 
   return jsonOk({ ...inserted, notify_sent: notifySent })
 }
 
-async function handlePatchShift(request: Request, env: Env, shiftId: string): Promise<Response> {
+async function handlePatchShift(request: Request, env: Env, tenantId: string, shiftId: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT * FROM shifts WHERE id = ?')
-    .bind(shiftId)
+    .prepare('SELECT * FROM shifts WHERE id = ? AND tenant_id = ?')
+    .bind(shiftId, tenantId)
     .first<Shift>()
 
   if (!existing) return jsonError('シフトが見つかりません', 404)
@@ -578,11 +591,11 @@ async function handlePatchShift(request: Request, env: Env, shiftId: string): Pr
 
   // staff_id / property_id の存在チェック（変更時のみ）
   if (payload.staff_id !== undefined && payload.staff_id !== existing.staff_id) {
-    const staff = await env.DB.prepare('SELECT id FROM staff WHERE id = ? AND is_active = 1').bind(staffId).first<{ id: string }>()
+    const staff = await env.DB.prepare('SELECT id FROM staff WHERE id = ? AND tenant_id = ? AND is_active = 1').bind(staffId, tenantId).first<{ id: string }>()
     if (!staff) return jsonError('スタッフが見つかりません', 404)
   }
   if (payload.property_id !== undefined && payload.property_id !== existing.property_id) {
-    const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ?').bind(propertyId).first<{ id: string }>()
+    const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ? AND tenant_id = ?').bind(propertyId, tenantId).first<{ id: string }>()
     if (!property) return jsonError('物件が見つかりません', 404)
   }
 
@@ -605,20 +618,20 @@ async function handlePatchShift(request: Request, env: Env, shiftId: string): Pr
       SET staff_id = ?, property_id = ?, task_type = ?, date = ?,
           status = ?, start_time = ?, end_time = ?,
           completion_note = ?, completion_photo_urls = ?, updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(staffId, propertyId, taskType, date, finalStatus, startTime, endTime, completionNote, completionPhotoUrls, shiftId)
+    .bind(staffId, propertyId, taskType, date, finalStatus, startTime, endTime, completionNote, completionPhotoUrls, shiftId, tenantId)
     .run()
 
   let notifySent = false
   if (shouldNotify) {
     const refreshed = await env.DB
-      .prepare('SELECT * FROM shifts WHERE id = ?')
-      .bind(shiftId)
+      .prepare('SELECT * FROM shifts WHERE id = ? AND tenant_id = ?')
+      .bind(shiftId, tenantId)
       .first<Shift>()
     if (refreshed) {
       try {
-        await notifyStaffAboutShift(env, refreshed, 'update')
+        await notifyStaffAboutShift(env, tenantId, refreshed, 'update')
         notifySent = true
       } catch (err) {
         console.error('notifyStaffAboutShift (update) failed', err)
@@ -627,23 +640,23 @@ async function handlePatchShift(request: Request, env: Env, shiftId: string): Pr
   }
 
   const updated = await env.DB
-    .prepare('SELECT * FROM shifts WHERE id = ?')
-    .bind(shiftId)
+    .prepare('SELECT * FROM shifts WHERE id = ? AND tenant_id = ?')
+    .bind(shiftId, tenantId)
     .first<Shift>()
 
   return jsonOk({ ...updated, notify_sent: notifySent })
 }
 
-async function notifyStaffAboutShift(env: Env, shift: Shift, kind: 'create' | 'update'): Promise<void> {
+async function notifyStaffAboutShift(env: Env, tenantId: string, shift: Shift, kind: 'create' | 'update'): Promise<void> {
   const staff = await env.DB
-    .prepare('SELECT id, name, line_user_id FROM staff WHERE id = ?')
-    .bind(shift.staff_id)
+    .prepare('SELECT id, name, line_user_id FROM staff WHERE id = ? AND tenant_id = ?')
+    .bind(shift.staff_id, tenantId)
     .first<{ id: string; name: string; line_user_id: string }>()
   if (!staff || !staff.line_user_id) return
 
   const property = await env.DB
-    .prepare('SELECT id, name FROM properties WHERE id = ?')
-    .bind(shift.property_id)
+    .prepare('SELECT id, name FROM properties WHERE id = ? AND tenant_id = ?')
+    .bind(shift.property_id, tenantId)
     .first<{ id: string; name: string }>()
 
   const propertyName = property?.name ?? '物件'
@@ -677,19 +690,19 @@ async function notifyStaffAboutShift(env: Env, shift: Shift, kind: 'create' | 'u
   )
 }
 
-async function handleDeleteShift(env: Env, shiftId: string): Promise<Response> {
+async function handleDeleteShift(env: Env, tenantId: string, shiftId: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT id FROM shifts WHERE id = ?')
-    .bind(shiftId)
+    .prepare('SELECT id FROM shifts WHERE id = ? AND tenant_id = ?')
+    .bind(shiftId, tenantId)
     .first<{ id: string }>()
 
   if (!existing) return jsonError('シフトが見つかりません', 404)
 
-  await env.DB.prepare('DELETE FROM shifts WHERE id = ?').bind(shiftId).run()
+  await env.DB.prepare('DELETE FROM shifts WHERE id = ? AND tenant_id = ?').bind(shiftId, tenantId).run()
   return jsonOk({ id: shiftId, deleted: true })
 }
 
-async function handleProposeShifts(request: Request, env: Env): Promise<Response> {
+async function handleProposeShifts(request: Request, env: Env, tenantId: string): Promise<Response> {
   if (!env.AGENT_ENDPOINT?.trim()) {
     return jsonError('AGENT_ENDPOINT が設定されていません', 500)
   }
@@ -706,22 +719,24 @@ async function handleProposeShifts(request: Request, env: Env): Promise<Response
     .prepare(`
       SELECT *
       FROM reservations
-      WHERE checkin_date < date(?, '+7 days')
+      WHERE tenant_id = ?
+        AND checkin_date < date(?, '+7 days')
         AND checkout_date >= ?
         AND status NOT IN ('cancelled', 'blocked')
       ORDER BY checkin_date ASC
     `)
-    .bind(weekStartDate, weekStartDate)
+    .bind(tenantId, weekStartDate, weekStartDate)
     .all<Reservation>()
 
   const shiftRequests = await env.DB
     .prepare(`
       SELECT *
       FROM shift_requests
-      WHERE week_start_date = ?
+      WHERE tenant_id = ?
+        AND week_start_date = ?
       ORDER BY collected_at DESC
     `)
-    .bind(weekStartDate)
+    .bind(tenantId, weekStartDate)
     .all<ShiftRequest>()
 
   const agentRes = await fetch(joinUrl(env.AGENT_ENDPOINT, '/propose-shifts'), {
@@ -749,7 +764,7 @@ async function handleProposeShifts(request: Request, env: Env): Promise<Response
 
   const created: Shift[] = []
   for (const proposal of proposals) {
-    const normalized = await validateShiftInput(env, {
+    const normalized = await validateShiftInput(env, tenantId, {
       staff_id: proposal.staff_id,
       property_id: proposal.property_id,
       reservation_id: proposal.reservation_id ?? null,
@@ -767,13 +782,14 @@ async function handleProposeShifts(request: Request, env: Env): Promise<Response
     const inserted = await env.DB
       .prepare(`
         INSERT INTO shifts (
-          staff_id, property_id, reservation_id, task_type, date,
+          tenant_id, staff_id, property_id, reservation_id, task_type, date,
           start_time, end_time, status, proposed_by, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'proposed', 'system', datetime('now'), datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', 'system', datetime('now'), datetime('now'))
         RETURNING *
       `)
       .bind(
+        tenantId,
         normalized.value.staff_id,
         normalized.value.property_id,
         normalized.value.reservation_id,
@@ -797,7 +813,7 @@ async function handleProposeShifts(request: Request, env: Env): Promise<Response
   })
 }
 
-async function handleConfirmAllShifts(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleConfirmAllShifts(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const week = searchParams.get('week')?.trim()
   if (week && !isDate(week)) {
     return jsonError('week は YYYY-MM-DD 形式で指定してください', 400)
@@ -808,24 +824,27 @@ async function handleConfirmAllShifts(env: Env, searchParams: URLSearchParams): 
         .prepare(`
           SELECT sh.*, s.line_user_id, s.name AS staff_name, p.name AS property_name
           FROM shifts sh
-          JOIN staff s ON s.id = sh.staff_id
-          JOIN properties p ON p.id = sh.property_id
-          WHERE sh.status = 'proposed'
+          JOIN staff s ON s.id = sh.staff_id AND s.tenant_id = sh.tenant_id
+          JOIN properties p ON p.id = sh.property_id AND p.tenant_id = sh.tenant_id
+          WHERE sh.tenant_id = ?
+            AND sh.status = 'proposed'
             AND sh.date >= ?
             AND sh.date < date(?, '+7 days')
           ORDER BY sh.date ASC, sh.start_time ASC
         `)
-        .bind(week, week)
+        .bind(tenantId, week, week)
         .all<Shift & { line_user_id: string; staff_name: string; property_name: string }>()
     : await env.DB
         .prepare(`
           SELECT sh.*, s.line_user_id, s.name AS staff_name, p.name AS property_name
           FROM shifts sh
-          JOIN staff s ON s.id = sh.staff_id
-          JOIN properties p ON p.id = sh.property_id
-          WHERE sh.status = 'proposed'
+          JOIN staff s ON s.id = sh.staff_id AND s.tenant_id = sh.tenant_id
+          JOIN properties p ON p.id = sh.property_id AND p.tenant_id = sh.tenant_id
+          WHERE sh.tenant_id = ?
+            AND sh.status = 'proposed'
           ORDER BY sh.date ASC, sh.start_time ASC
         `)
+        .bind(tenantId)
         .all<Shift & { line_user_id: string; staff_name: string; property_name: string }>()
 
   for (const row of rows.results) {
@@ -833,9 +852,9 @@ async function handleConfirmAllShifts(env: Env, searchParams: URLSearchParams): 
       .prepare(`
         UPDATE shifts
         SET status = 'confirmed', updated_at = datetime('now')
-        WHERE id = ?
+        WHERE id = ? AND tenant_id = ?
       `)
-      .bind(row.id)
+      .bind(row.id, tenantId)
       .run()
 
     const text = buildConfirmedShiftText({
@@ -855,6 +874,7 @@ async function handleConfirmAllShifts(env: Env, searchParams: URLSearchParams): 
 
 async function validateShiftInput(
   env: Env,
+  tenantId: string,
   payload: ShiftCreateInput
 ): Promise<{ ok: true; value: Required<ShiftCreateInput> } | { ok: false; error: string }> {
   const staffId = payload.staff_id?.trim()
@@ -889,16 +909,16 @@ async function validateShiftInput(
   }
 
   const [staff, property] = await Promise.all([
-    env.DB.prepare('SELECT id FROM staff WHERE id = ? AND is_active = 1').bind(staffId).first<{ id: string }>(),
-    env.DB.prepare('SELECT id FROM properties WHERE id = ?').bind(propertyId).first<{ id: string }>(),
+    env.DB.prepare('SELECT id FROM staff WHERE id = ? AND tenant_id = ? AND is_active = 1').bind(staffId, tenantId).first<{ id: string }>(),
+    env.DB.prepare('SELECT id FROM properties WHERE id = ? AND tenant_id = ?').bind(propertyId, tenantId).first<{ id: string }>(),
   ])
   if (!staff) return { ok: false, error: 'スタッフが見つかりません' }
   if (!property) return { ok: false, error: '物件が見つかりません' }
 
   if (reservationId) {
     const reservation = await env.DB
-      .prepare('SELECT id FROM reservations WHERE id = ?')
-      .bind(reservationId)
+      .prepare('SELECT id FROM reservations WHERE id = ? AND tenant_id = ?')
+      .bind(reservationId, tenantId)
       .first<{ id: string }>()
     if (!reservation) return { ok: false, error: '予約が見つかりません' }
   }

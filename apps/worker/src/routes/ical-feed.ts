@@ -11,21 +11,21 @@ export async function handleIcalFeed(request: Request, env: Env): Promise<Respon
   if (!propertyId) return new Response('Not Found', { status: 404 })
 
   const property = await env.DB
-    .prepare('SELECT id, name FROM properties WHERE id = ?')
+    .prepare('SELECT id, tenant_id, name FROM properties WHERE id = ?')
     .bind(propertyId)
-    .first<{ id: string; name: string }>()
+    .first<{ id: string; tenant_id: string; name: string }>()
   if (!property) return new Response('Not Found', { status: 404 })
 
   const rows = await env.DB
     .prepare(`
       SELECT r.*, p.name AS property_name
       FROM reservations r
-      JOIN properties p ON p.id = r.property_id
-      WHERE r.property_id = ?
+      JOIN properties p ON p.id = r.property_id AND p.tenant_id = r.tenant_id
+      WHERE r.property_id = ? AND r.tenant_id = ?
         AND r.status IN ('confirmed', 'completed', 'blocked')
       ORDER BY r.checkin_date ASC
     `)
-    .bind(propertyId)
+    .bind(propertyId, property.tenant_id)
     .all<IcalReservation>()
 
   const now = formatTimestamp(new Date())

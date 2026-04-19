@@ -1,3 +1,4 @@
+import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, StaffAutoMessage } from '../types'
 
 const VALID_ROLES = ['cleaner', 'checkin', 'manager'] as const
@@ -13,24 +14,29 @@ interface PatchInput {
 }
 
 export async function staffAutoMessageRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const url = new URL(request.url)
   if (url.pathname !== '/api/staff-auto-messages') {
     return jsonError('Not Found', 404)
   }
 
-  if (request.method === 'GET') return handleList(env)
-  if (request.method === 'PATCH') return handlePatch(request, env)
+  if (request.method === 'GET') return handleList(env, tenantId)
+  if (request.method === 'PATCH') return handlePatch(request, env, tenantId)
   return jsonError('Method Not Allowed', 405)
 }
 
-async function handleList(env: Env): Promise<Response> {
+async function handleList(env: Env, tenantId: string): Promise<Response> {
   const rows = await env.DB
-    .prepare('SELECT role, event_type, body_text, updated_at FROM staff_auto_messages ORDER BY role, event_type')
+    .prepare('SELECT role, event_type, body_text, updated_at FROM staff_auto_messages WHERE tenant_id = ? ORDER BY role, event_type')
+    .bind(tenantId)
     .all<StaffAutoMessage>()
   return jsonOk(rows.results)
 }
 
-async function handlePatch(request: Request, env: Env): Promise<Response> {
+async function handlePatch(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<PatchInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -49,18 +55,18 @@ async function handlePatch(request: Request, env: Env): Promise<Response> {
 
   await env.DB
     .prepare(`
-      INSERT INTO staff_auto_messages (role, event_type, body_text, updated_at)
-      VALUES (?, ?, ?, datetime('now'))
-      ON CONFLICT(role, event_type) DO UPDATE SET
+      INSERT INTO staff_auto_messages (tenant_id, role, event_type, body_text, updated_at)
+      VALUES (?, ?, ?, ?, datetime('now'))
+      ON CONFLICT(tenant_id, role, event_type) DO UPDATE SET
         body_text = excluded.body_text,
         updated_at = datetime('now')
     `)
-    .bind(role, eventType, body)
+    .bind(tenantId, role, eventType, body)
     .run()
 
   const updated = await env.DB
-    .prepare('SELECT role, event_type, body_text, updated_at FROM staff_auto_messages WHERE role = ? AND event_type = ?')
-    .bind(role, eventType)
+    .prepare('SELECT role, event_type, body_text, updated_at FROM staff_auto_messages WHERE tenant_id = ? AND role = ? AND event_type = ?')
+    .bind(tenantId, role, eventType)
     .first<StaffAutoMessage>()
 
   return jsonOk(updated)

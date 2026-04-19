@@ -1,3 +1,4 @@
+import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, Reservation } from '../types'
 
 type ReservationListRow = Reservation
@@ -33,6 +34,10 @@ interface DoubleBookingRow {
 }
 
 export async function reservationRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const url = new URL(request.url)
   const { pathname, searchParams } = url
   const reservationId = getIdFromPath(pathname, '/api/reservations/')
@@ -40,26 +45,26 @@ export async function reservationRoutes(request: Request, env: Env): Promise<Res
   if (pathname.startsWith('/api/reservations/180days/')) {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
     const propertyId = pathname.slice('/api/reservations/180days/'.length)
-    return handleGetAnnualDays(env, propertyId, searchParams.get('year'))
+    return handleGetAnnualDays(env, tenantId, propertyId, searchParams.get('year'))
   }
 
   if (pathname === '/api/reservations') {
-    if (request.method === 'GET') return handleListReservations(env, searchParams)
-    if (request.method === 'POST') return handleCreateReservation(request, env)
+    if (request.method === 'GET') return handleListReservations(env, tenantId, searchParams)
+    if (request.method === 'POST') return handleCreateReservation(request, env, tenantId)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (reservationId) {
-    if (request.method === 'GET') return handleGetReservation(env, reservationId)
-    if (request.method === 'PATCH') return handlePatchReservation(request, env, reservationId)
-    if (request.method === 'DELETE') return handleDeleteReservation(env, reservationId)
+    if (request.method === 'GET') return handleGetReservation(env, tenantId, reservationId)
+    if (request.method === 'PATCH') return handlePatchReservation(request, env, tenantId, reservationId)
+    if (request.method === 'DELETE') return handleDeleteReservation(env, tenantId, reservationId)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListReservations(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleListReservations(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const propertyId = searchParams.get('property_id')?.trim()
   const month = searchParams.get('month')?.trim()
   const status = searchParams.get('status')?.trim()
@@ -68,8 +73,8 @@ async function handleListReservations(env: Env, searchParams: URLSearchParams): 
     return jsonError('month は YYYY-MM 形式で指定してください', 400)
   }
 
-  const conditions: string[] = []
-  const bindings: Array<string | number> = []
+  const conditions: string[] = ['tenant_id = ?']
+  const bindings: Array<string | number> = [tenantId]
 
   if (propertyId) {
     conditions.push('property_id = ?')
@@ -85,7 +90,7 @@ async function handleListReservations(env: Env, searchParams: URLSearchParams): 
     bindings.push(status)
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const where = `WHERE ${conditions.join(' AND ')}`
   const rows = await env.DB
     .prepare(`
       SELECT *
@@ -99,10 +104,10 @@ async function handleListReservations(env: Env, searchParams: URLSearchParams): 
   return jsonOk(rows.results)
 }
 
-async function handleGetReservation(env: Env, id: string): Promise<Response> {
+async function handleGetReservation(env: Env, tenantId: string, id: string): Promise<Response> {
   const reservation = await env.DB
-    .prepare('SELECT * FROM reservations WHERE id = ?')
-    .bind(id)
+    .prepare('SELECT * FROM reservations WHERE id = ? AND tenant_id = ?')
+    .bind(id, tenantId)
     .first<Reservation>()
 
   if (!reservation) {
@@ -112,14 +117,14 @@ async function handleGetReservation(env: Env, id: string): Promise<Response> {
   return jsonOk(reservation)
 }
 
-async function handleCreateReservation(request: Request, env: Env): Promise<Response> {
+async function handleCreateReservation(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<ReservationCreateInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
   const validated = validateReservationInput(payload, false)
   if (!validated.ok) return jsonError(validated.error, 400)
 
-  const overlaps = await findOverlappingReservations(env, validated.value.property_id, validated.value.checkin_date, validated.value.checkout_date)
+  const overlaps = await findOverlappingReservations(env, tenantId, validated.value.property_id, validated.value.checkin_date, validated.value.checkout_date)
   if (overlaps.length > 0) {
     return jsonErrorWithData('ダブルブッキングが検知されました', 409, {
       conflicts: overlaps,
@@ -131,14 +136,15 @@ async function handleCreateReservation(request: Request, env: Env): Promise<Resp
   await env.DB
     .prepare(`
       INSERT INTO reservations (
-        id, property_id, platform, external_id, guest_name, guest_email, guest_count,
+        id, tenant_id, property_id, platform, external_id, guest_name, guest_email, guest_count,
         checkin_date, checkout_date, checkin_time, checkout_time,
         gross_amount, net_amount, ota_fee_amount, status, notes, raw_ical_data,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `)
     .bind(
       reservationId,
+      tenantId,
       validated.value.property_id,
       validated.value.platform,
       validated.value.external_id,
@@ -159,8 +165,8 @@ async function handleCreateReservation(request: Request, env: Env): Promise<Resp
     .run()
 
   const reservation = await env.DB
-    .prepare('SELECT * FROM reservations WHERE id = ?')
-    .bind(reservationId)
+    .prepare('SELECT * FROM reservations WHERE id = ? AND tenant_id = ?')
+    .bind(reservationId, tenantId)
     .first<Reservation>()
 
   return jsonOk({
@@ -169,8 +175,8 @@ async function handleCreateReservation(request: Request, env: Env): Promise<Resp
   })
 }
 
-async function handlePatchReservation(request: Request, env: Env, id: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT * FROM reservations WHERE id = ?').bind(id).first<Reservation>()
+async function handlePatchReservation(request: Request, env: Env, tenantId: string, id: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT * FROM reservations WHERE id = ? AND tenant_id = ?').bind(id, tenantId).first<Reservation>()
   if (!existing) return jsonError('予約が見つかりません', 404)
 
   const payload = await safeJson<ReservationPatchInput>(request)
@@ -186,7 +192,7 @@ async function handlePatchReservation(request: Request, env: Env, id: string): P
     next.checkout_date !== existing.checkout_date
 
   if (datesChanged) {
-    const overlaps = await findOverlappingReservations(env, next.property_id, next.checkin_date, next.checkout_date, id)
+    const overlaps = await findOverlappingReservations(env, tenantId, next.property_id, next.checkin_date, next.checkout_date, id)
     if (overlaps.length > 0) {
       return jsonErrorWithData('ダブルブッキングが検知されました', 409, {
         conflicts: overlaps,
@@ -201,7 +207,7 @@ async function handlePatchReservation(request: Request, env: Env, id: string): P
           checkin_date = ?, checkout_date = ?, checkin_time = ?, checkout_time = ?,
           gross_amount = ?, net_amount = ?, ota_fee_amount = ?, status = ?, notes = ?, raw_ical_data = ?,
           updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
     .bind(
       next.property_id,
@@ -220,23 +226,24 @@ async function handlePatchReservation(request: Request, env: Env, id: string): P
       next.status,
       next.notes,
       next.raw_ical_data,
-      id
+      id,
+      tenantId
     )
     .run()
 
-  const updated = await env.DB.prepare('SELECT * FROM reservations WHERE id = ?').bind(id).first<Reservation>()
+  const updated = await env.DB.prepare('SELECT * FROM reservations WHERE id = ? AND tenant_id = ?').bind(id, tenantId).first<Reservation>()
   return jsonOk(updated)
 }
 
-async function handleDeleteReservation(env: Env, id: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT id FROM reservations WHERE id = ?').bind(id).first<{ id: string }>()
+async function handleDeleteReservation(env: Env, tenantId: string, id: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT id FROM reservations WHERE id = ? AND tenant_id = ?').bind(id, tenantId).first<{ id: string }>()
   if (!existing) return jsonError('予約が見つかりません', 404)
 
-  await env.DB.prepare('DELETE FROM reservations WHERE id = ?').bind(id).run()
+  await env.DB.prepare('DELETE FROM reservations WHERE id = ? AND tenant_id = ?').bind(id, tenantId).run()
   return jsonOk({ id, deleted: true })
 }
 
-async function handleGetAnnualDays(env: Env, propertyId: string, yearParam: string | null): Promise<Response> {
+async function handleGetAnnualDays(env: Env, tenantId: string, propertyId: string, yearParam: string | null): Promise<Response> {
   if (!propertyId) return jsonError('property_id は必須です', 400)
 
   const year = yearParam?.trim()
@@ -245,8 +252,8 @@ async function handleGetAnnualDays(env: Env, propertyId: string, yearParam: stri
   }
 
   const property = await env.DB
-    .prepare('SELECT id, name, annual_day_limit FROM properties WHERE id = ?')
-    .bind(propertyId)
+    .prepare('SELECT id, name, annual_day_limit FROM properties WHERE id = ? AND tenant_id = ?')
+    .bind(propertyId, tenantId)
     .first<{ id: string; name: string; annual_day_limit: number }>()
 
   if (!property) return jsonError('物件が見つかりません', 404)
@@ -256,20 +263,20 @@ async function handleGetAnnualDays(env: Env, propertyId: string, yearParam: stri
         .prepare(`
           SELECT property_id, year, days_used
           FROM annual_days_used
-          WHERE property_id = ? AND year = ?
+          WHERE property_id = ? AND tenant_id = ? AND year = ?
           LIMIT 1
         `)
-        .bind(propertyId, Number.parseInt(year, 10))
+        .bind(propertyId, tenantId, Number.parseInt(year, 10))
         .first<{ property_id: string; year: number; days_used: number | null }>()
     : await env.DB
         .prepare(`
           SELECT property_id, year, days_used
           FROM annual_days_used
-          WHERE property_id = ?
+          WHERE property_id = ? AND tenant_id = ?
           ORDER BY year DESC
           LIMIT 1
         `)
-        .bind(propertyId)
+        .bind(propertyId, tenantId)
         .first<{ property_id: string; year: number; days_used: number | null }>()
 
   const targetYear = summary?.year ?? (year ? Number.parseInt(year, 10) : new Date().getUTCFullYear())
@@ -287,6 +294,7 @@ async function handleGetAnnualDays(env: Env, propertyId: string, yearParam: stri
 
 async function findOverlappingReservations(
   env: Env,
+  tenantId: string,
   propertyId: string,
   checkinDate: string,
   checkoutDate: string,
@@ -296,6 +304,7 @@ async function findOverlappingReservations(
     SELECT id, property_id, guest_name, checkin_date, checkout_date, status
     FROM reservations
     WHERE property_id = ?
+      AND tenant_id = ?
       AND status NOT IN ('cancelled', 'blocked')
       AND checkin_date < ?
       AND checkout_date > ?
@@ -305,8 +314,8 @@ async function findOverlappingReservations(
 
   const stmt = env.DB.prepare(sql)
   const result = excludeId
-    ? await stmt.bind(propertyId, checkoutDate, checkinDate, excludeId).all<DoubleBookingRow>()
-    : await stmt.bind(propertyId, checkoutDate, checkinDate).all<DoubleBookingRow>()
+    ? await stmt.bind(propertyId, tenantId, checkoutDate, checkinDate, excludeId).all<DoubleBookingRow>()
+    : await stmt.bind(propertyId, tenantId, checkoutDate, checkinDate).all<DoubleBookingRow>()
 
   return result.results
 }

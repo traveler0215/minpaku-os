@@ -1,3 +1,4 @@
+import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, LaborCost } from '../types'
 
 interface LaborCostPatchInput {
@@ -7,34 +8,38 @@ interface LaborCostPatchInput {
 }
 
 export async function laborRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const { pathname, searchParams } = new URL(request.url)
 
   if (pathname === '/api/labor-costs') {
-    if (request.method === 'GET') return handleListLaborCosts(env, searchParams)
+    if (request.method === 'GET') return handleListLaborCosts(env, tenantId, searchParams)
+    return jsonError('Method Not Allowed', 405)
+  }
+
+  if (pathname === '/api/labor-costs/summary') {
+    if (request.method === 'GET') return handleLaborSummary(env, tenantId, searchParams)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (pathname.startsWith('/api/labor-costs/')) {
     const id = pathname.slice('/api/labor-costs/'.length)
     if (!id || id.includes('/')) return jsonError('Not Found', 404)
-    if (request.method === 'PATCH') return handlePatchLaborCost(request, env, id)
-    return jsonError('Method Not Allowed', 405)
-  }
-
-  if (pathname === '/api/labor-costs/summary') {
-    if (request.method === 'GET') return handleLaborSummary(env, searchParams)
+    if (request.method === 'PATCH') return handlePatchLaborCost(request, env, tenantId, id)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListLaborCosts(env: Env, params: URLSearchParams): Promise<Response> {
+async function handleListLaborCosts(env: Env, tenantId: string, params: URLSearchParams): Promise<Response> {
   const month = params.get('month')?.trim()
   const staffId = params.get('staff_id')?.trim()
 
-  const conditions = ['1 = 1']
-  const bindings: string[] = []
+  const conditions = ['lc.tenant_id = ?']
+  const bindings: string[] = [tenantId]
 
   if (month) { conditions.push("substr(lc.date, 1, 7) = ?"); bindings.push(month) }
   if (staffId) { conditions.push("lc.staff_id = ?"); bindings.push(staffId) }
@@ -43,7 +48,7 @@ async function handleListLaborCosts(env: Env, params: URLSearchParams): Promise<
     .prepare(`
       SELECT lc.*, p.name AS property_name
       FROM labor_costs lc
-      LEFT JOIN properties p ON p.id = lc.property_id
+      LEFT JOIN properties p ON p.id = lc.property_id AND p.tenant_id = lc.tenant_id
       WHERE ${conditions.join(' AND ')}
       ORDER BY lc.date DESC, lc.staff_name ASC
     `)
@@ -55,10 +60,10 @@ async function handleListLaborCosts(env: Env, params: URLSearchParams): Promise<
   return jsonOk({ total_amount: totalAmount, rows: rows.results })
 }
 
-async function handlePatchLaborCost(request: Request, env: Env, id: string): Promise<Response> {
+async function handlePatchLaborCost(request: Request, env: Env, tenantId: string, id: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT * FROM labor_costs WHERE id = ?')
-    .bind(id)
+    .prepare('SELECT * FROM labor_costs WHERE id = ? AND tenant_id = ?')
+    .bind(id, tenantId)
     .first<LaborCost>()
 
   if (!existing) return jsonError('人件費レコードが見つかりません', 404)
@@ -71,18 +76,21 @@ async function handlePatchLaborCost(request: Request, env: Env, id: string): Pro
   const note = payload.note !== undefined ? payload.note : existing.note
 
   await env.DB
-    .prepare('UPDATE labor_costs SET hours = ?, amount = ?, note = ?, updated_at = datetime(\'now\') WHERE id = ?')
-    .bind(hours, amount, note, id)
+    .prepare('UPDATE labor_costs SET hours = ?, amount = ?, note = ?, updated_at = datetime(\'now\') WHERE id = ? AND tenant_id = ?')
+    .bind(hours, amount, note, id, tenantId)
     .run()
 
-  const updated = await env.DB.prepare('SELECT * FROM labor_costs WHERE id = ?').bind(id).first<LaborCost>()
+  const updated = await env.DB
+    .prepare('SELECT * FROM labor_costs WHERE id = ? AND tenant_id = ?')
+    .bind(id, tenantId)
+    .first<LaborCost>()
   return jsonOk(updated)
 }
 
-async function handleLaborSummary(env: Env, params: URLSearchParams): Promise<Response> {
+async function handleLaborSummary(env: Env, tenantId: string, params: URLSearchParams): Promise<Response> {
   const month = params.get('month')?.trim()
-  const conditions = ['1 = 1']
-  const bindings: string[] = []
+  const conditions = ['lc.tenant_id = ?']
+  const bindings: string[] = [tenantId]
   if (month) { conditions.push("substr(lc.date, 1, 7) = ?"); bindings.push(month) }
 
   const rows = await env.DB
@@ -105,16 +113,16 @@ async function handleLaborSummary(env: Env, params: URLSearchParams): Promise<Re
 /**
  * シフト完了時に人件費を自動計算して登録する
  */
-export async function createLaborCostFromShift(env: Env, shiftId: string): Promise<void> {
+export async function createLaborCostFromShift(env: Env, tenantId: string, shiftId: string): Promise<void> {
   const shift = await env.DB
     .prepare(`
       SELECT s.id, s.staff_id, s.property_id, s.date, s.start_time, s.end_time,
              st.name AS staff_name, st.hourly_wage, st.wage_type
       FROM shifts s
-      JOIN staff st ON st.id = s.staff_id
-      WHERE s.id = ?
+      JOIN staff st ON st.id = s.staff_id AND st.tenant_id = s.tenant_id
+      WHERE s.id = ? AND s.tenant_id = ?
     `)
-    .bind(shiftId)
+    .bind(shiftId, tenantId)
     .first<{
       id: string; staff_id: string; property_id: string | null; date: string;
       start_time: string | null; end_time: string | null;
@@ -137,12 +145,12 @@ export async function createLaborCostFromShift(env: Env, shiftId: string): Promi
 
   await env.DB
     .prepare(`
-      INSERT INTO labor_costs (shift_id, staff_id, staff_name, property_id, date, hours, wage_type, wage_rate, amount)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO labor_costs (tenant_id, shift_id, staff_id, staff_name, property_id, date, hours, wage_type, wage_rate, amount)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(shift_id) DO UPDATE SET hours = ?, amount = ?, updated_at = datetime('now')
     `)
     .bind(
-      shift.id, shift.staff_id, shift.staff_name, shift.property_id, shift.date,
+      tenantId, shift.id, shift.staff_id, shift.staff_name, shift.property_id, shift.date,
       hours, wageType, shift.hourly_wage, amount,
       hours, amount
     )

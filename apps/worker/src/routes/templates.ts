@@ -1,3 +1,4 @@
+import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, MessageTemplate } from '../types'
 
 interface TemplateInput {
@@ -8,30 +9,34 @@ interface TemplateInput {
 }
 
 export async function templateRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const url = new URL(request.url)
   const { pathname, searchParams } = url
 
   if (pathname === '/api/templates') {
-    if (request.method === 'GET') return handleListTemplates(env, searchParams)
-    if (request.method === 'POST') return handleCreateTemplate(request, env)
+    if (request.method === 'GET') return handleListTemplates(env, tenantId, searchParams)
+    if (request.method === 'POST') return handleCreateTemplate(request, env, tenantId)
     return jsonError('Method Not Allowed', 405)
   }
 
   const templateId = getIdFromPath(pathname, '/api/templates/')
   if (templateId) {
-    if (request.method === 'PATCH') return handlePatchTemplate(request, env, templateId)
-    if (request.method === 'DELETE') return handleDeleteTemplate(env, templateId)
+    if (request.method === 'PATCH') return handlePatchTemplate(request, env, tenantId, templateId)
+    if (request.method === 'DELETE') return handleDeleteTemplate(env, tenantId, templateId)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListTemplates(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleListTemplates(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const category = searchParams.get('category')?.trim()
   const language = searchParams.get('language')?.trim()
-  const conditions: string[] = []
-  const bindings: string[] = []
+  const conditions: string[] = ['tenant_id = ?']
+  const bindings: string[] = [tenantId]
 
   if (category) {
     conditions.push('category = ?')
@@ -42,7 +47,7 @@ async function handleListTemplates(env: Env, searchParams: URLSearchParams): Pro
     bindings.push(language)
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const where = `WHERE ${conditions.join(' AND ')}`
   const rows = await env.DB
     .prepare(`
       SELECT *
@@ -56,7 +61,7 @@ async function handleListTemplates(env: Env, searchParams: URLSearchParams): Pro
   return jsonOk(rows.results)
 }
 
-async function handleCreateTemplate(request: Request, env: Env): Promise<Response> {
+async function handleCreateTemplate(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<TemplateInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -65,18 +70,18 @@ async function handleCreateTemplate(request: Request, env: Env): Promise<Respons
 
   const inserted = await env.DB
     .prepare(`
-      INSERT INTO message_templates (name, category, language, body_text, created_at, updated_at)
-      VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+      INSERT INTO message_templates (tenant_id, name, category, language, body_text, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
       RETURNING *
     `)
-    .bind(normalized.value.name, normalized.value.category, normalized.value.language, normalized.value.body_text)
+    .bind(tenantId, normalized.value.name, normalized.value.category, normalized.value.language, normalized.value.body_text)
     .first<MessageTemplate>()
 
   return jsonOk(inserted)
 }
 
-async function handlePatchTemplate(request: Request, env: Env, id: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT * FROM message_templates WHERE id = ?').bind(id).first<MessageTemplate>()
+async function handlePatchTemplate(request: Request, env: Env, tenantId: string, id: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT * FROM message_templates WHERE id = ? AND tenant_id = ?').bind(id, tenantId).first<MessageTemplate>()
   if (!existing) return jsonError('テンプレートが見つかりません', 404)
 
   const payload = await safeJson<TemplateInput>(request)
@@ -89,20 +94,20 @@ async function handlePatchTemplate(request: Request, env: Env, id: string): Prom
     .prepare(`
       UPDATE message_templates
       SET name = ?, category = ?, language = ?, body_text = ?, updated_at = datetime('now')
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(normalized.value.name, normalized.value.category, normalized.value.language, normalized.value.body_text, id)
+    .bind(normalized.value.name, normalized.value.category, normalized.value.language, normalized.value.body_text, id, tenantId)
     .run()
 
-  const updated = await env.DB.prepare('SELECT * FROM message_templates WHERE id = ?').bind(id).first<MessageTemplate>()
+  const updated = await env.DB.prepare('SELECT * FROM message_templates WHERE id = ? AND tenant_id = ?').bind(id, tenantId).first<MessageTemplate>()
   return jsonOk(updated)
 }
 
-async function handleDeleteTemplate(env: Env, id: string): Promise<Response> {
-  const existing = await env.DB.prepare('SELECT id FROM message_templates WHERE id = ?').bind(id).first<{ id: string }>()
+async function handleDeleteTemplate(env: Env, tenantId: string, id: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT id FROM message_templates WHERE id = ? AND tenant_id = ?').bind(id, tenantId).first<{ id: string }>()
   if (!existing) return jsonError('テンプレートが見つかりません', 404)
 
-  await env.DB.prepare('DELETE FROM message_templates WHERE id = ?').bind(id).run()
+  await env.DB.prepare('DELETE FROM message_templates WHERE id = ? AND tenant_id = ?').bind(id, tenantId).run()
   return jsonOk({ id, deleted: true })
 }
 

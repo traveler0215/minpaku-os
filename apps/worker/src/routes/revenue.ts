@@ -1,4 +1,4 @@
-import { verifyJwt } from '../lib/auth'
+import { getTenantContext, verifyJwt } from '../lib/auth'
 import type { ApiResponse, Env } from '../types'
 
 interface RevenueImportJsonInput {
@@ -54,34 +54,38 @@ interface RevenueSummaryRow {
 }
 
 export async function revenueRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const url = new URL(request.url)
   const { pathname, searchParams } = url
 
   if (pathname === '/api/revenue/import') {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleImportRevenue(request, env)
+    return handleImportRevenue(request, env, tenantId)
   }
 
   if (pathname === '/api/revenue/summary') {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
-    return handleRevenueSummary(env, searchParams)
+    return handleRevenueSummary(env, tenantId, searchParams)
   }
 
   if (pathname === '/api/revenue/export') {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
-    return handleRevenueExport(env, searchParams)
+    return handleRevenueExport(env, tenantId, searchParams)
   }
 
   if (pathname === '/api/costs') {
-    if (request.method === 'POST') return handleCreateCost(request, env)
-    if (request.method === 'GET') return handleListCosts(env, searchParams)
+    if (request.method === 'POST') return handleCreateCost(request, env, tenantId)
+    if (request.method === 'GET') return handleListCosts(env, tenantId, searchParams)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleImportRevenue(request: Request, env: Env): Promise<Response> {
+async function handleImportRevenue(request: Request, env: Env, tenantId: string): Promise<Response> {
   if (!env.AGENT_ENDPOINT?.trim()) {
     return jsonError('AGENT_ENDPOINT が設定されていません', 500)
   }
@@ -131,7 +135,8 @@ async function handleImportRevenue(request: Request, env: Env): Promise<Response
 
   // デフォルト物件（1件しかない場合に自動紐づけ）
   const defaultProperty = await env.DB
-    .prepare('SELECT id FROM properties LIMIT 2')
+    .prepare('SELECT id FROM properties WHERE tenant_id = ? LIMIT 2')
+    .bind(tenantId)
     .all<{ id: string }>()
   const defaultPropertyId = defaultProperty.results[0]?.id ?? null
 
@@ -144,21 +149,22 @@ async function handleImportRevenue(request: Request, env: Env): Promise<Response
         .prepare(`
           UPDATE reservations
           SET gross_amount = ?, net_amount = ?, ota_fee_amount = ?, updated_at = datetime('now')
-          WHERE external_id = ?
+          WHERE external_id = ? AND tenant_id = ?
         `)
         .bind(
           toIntegerOrNull(row.gross_amount),
           toIntegerOrNull(row.net_amount),
           toIntegerOrNull(row.ota_fee_amount),
-          externalId
+          externalId,
+          tenantId
         )
         .run()
 
       if ((result.meta.changes ?? 0) > 0) {
         matchedCount += 1
         const matchedRows = await env.DB
-          .prepare('SELECT id FROM reservations WHERE external_id = ?')
-          .bind(externalId)
+          .prepare('SELECT id FROM reservations WHERE external_id = ? AND tenant_id = ?')
+          .bind(externalId, tenantId)
           .all<{ id: string }>()
         matchedReservationIds.push(...matchedRows.results.map((matched) => matched.id))
         continue
@@ -175,12 +181,13 @@ async function handleImportRevenue(request: Request, env: Env): Promise<Response
     await env.DB
       .prepare(`
         INSERT INTO reservations
-          (property_id, platform, external_id, guest_name, guest_email, guest_count,
+          (tenant_id, property_id, platform, external_id, guest_name, guest_email, guest_count,
            checkin_date, checkout_date, gross_amount, net_amount, ota_fee_amount, status,
            created_at, updated_at)
-        VALUES (?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), datetime('now'))
+        VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?, ?, ?, ?, 'confirmed', datetime('now'), datetime('now'))
       `)
       .bind(
+        tenantId,
         defaultPropertyId,
         platform,
         externalId ?? null,
@@ -197,11 +204,11 @@ async function handleImportRevenue(request: Request, env: Env): Promise<Response
 
   const importResult = await env.DB
     .prepare(`
-      INSERT INTO revenue_imports (platform, period_from, period_to, row_count, matched_count, imported_at, imported_by)
-      VALUES (?, ?, ?, ?, ?, datetime('now'), ?)
+      INSERT INTO revenue_imports (tenant_id, platform, period_from, period_to, row_count, matched_count, imported_at, imported_by)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'), ?)
       RETURNING id, imported_at
     `)
-    .bind(platform, periodFrom, periodTo, rows.length, matchedCount, importedBy)
+    .bind(tenantId, platform, periodFrom, periodTo, rows.length, matchedCount, importedBy)
     .first<{ id: string; imported_at: string }>()
 
   return jsonOk({
@@ -218,7 +225,7 @@ async function handleImportRevenue(request: Request, env: Env): Promise<Response
   })
 }
 
-async function handleRevenueSummary(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleRevenueSummary(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const month = searchParams.get('month')?.trim()
   const year = searchParams.get('year')?.trim()
   const propertyId = searchParams.get('property_id')?.trim()
@@ -231,8 +238,8 @@ async function handleRevenueSummary(env: Env, searchParams: URLSearchParams): Pr
     return jsonError('year は YYYY 形式で指定してください', 400)
   }
 
-  const conditions = ["r.status NOT IN ('cancelled', 'blocked')"]
-  const bindings: string[] = []
+  const conditions = ["r.status NOT IN ('cancelled', 'blocked')", 'r.tenant_id = ?']
+  const bindings: string[] = [tenantId]
 
   if (month) {
     conditions.push("substr(r.checkin_date, 1, 7) = ?")
@@ -265,7 +272,7 @@ async function handleRevenueSummary(env: Env, searchParams: URLSearchParams): Pr
         COALESCE(SUM(r.ota_fee_amount), 0) AS ota_fee_amount_total,
         COALESCE(SUM(r.net_amount), 0) AS net_amount_total
       FROM reservations r
-      JOIN properties p ON p.id = r.property_id
+      JOIN properties p ON p.id = r.property_id AND p.tenant_id = r.tenant_id
       ${where}
       GROUP BY year_month, year, r.property_id, p.name, r.platform
       ORDER BY year_month DESC, p.name ASC, r.platform ASC
@@ -287,8 +294,8 @@ async function handleRevenueSummary(env: Env, searchParams: URLSearchParams): Pr
   })
 
   // コスト集計
-  const costConditions = ['1 = 1']
-  const costBindings: string[] = []
+  const costConditions = ['c.tenant_id = ?']
+  const costBindings: string[] = [tenantId]
   if (month) { costConditions.push("substr(c.date, 1, 7) = ?"); costBindings.push(month) }
   if (year) { costConditions.push("substr(c.date, 1, 4) = ?"); costBindings.push(year) }
   if (propertyId) { costConditions.push('c.property_id = ?'); costBindings.push(propertyId) }
@@ -305,8 +312,8 @@ async function handleRevenueSummary(env: Env, searchParams: URLSearchParams): Pr
   const totalCost = Number(costRows?.total_cost ?? 0)
 
   // 人件費集計
-  const laborConditions = ['1 = 1']
-  const laborBindings: string[] = []
+  const laborConditions = ['lc.tenant_id = ?']
+  const laborBindings: string[] = [tenantId]
   if (month) { laborConditions.push("substr(lc.date, 1, 7) = ?"); laborBindings.push(month) }
   if (year) { laborConditions.push("substr(lc.date, 1, 4) = ?"); laborBindings.push(year) }
 
@@ -340,7 +347,7 @@ async function handleRevenueSummary(env: Env, searchParams: URLSearchParams): Pr
   })
 }
 
-async function handleRevenueExport(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleRevenueExport(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const month = searchParams.get('month')?.trim()
   const year = searchParams.get('year')?.trim()
   const propertyId = searchParams.get('property_id')?.trim()
@@ -352,10 +359,10 @@ async function handleRevenueExport(env: Env, searchParams: URLSearchParams): Pro
     return jsonError('year は YYYY 形式で指定してください', 400)
   }
 
-  const revenueConditions = ["r.status NOT IN ('cancelled', 'blocked')"]
-  const costConditions = ['1 = 1']
-  const revenueBindings: string[] = []
-  const costBindings: string[] = []
+  const revenueConditions = ["r.status NOT IN ('cancelled', 'blocked')", 'r.tenant_id = ?']
+  const costConditions = ['c.tenant_id = ?']
+  const revenueBindings: string[] = [tenantId]
+  const costBindings: string[] = [tenantId]
 
   if (month) {
     revenueConditions.push("substr(r.checkin_date, 1, 7) = ?")
@@ -388,7 +395,7 @@ async function handleRevenueExport(env: Env, searchParams: URLSearchParams): Pro
         COALESCE(r.ota_fee_amount, 0) AS ota_fee_amount,
         COALESCE(r.net_amount, 0) AS net_amount
       FROM reservations r
-      JOIN properties p ON p.id = r.property_id
+      JOIN properties p ON p.id = r.property_id AND p.tenant_id = r.tenant_id
       WHERE ${revenueConditions.join(' AND ')}
       ORDER BY r.checkin_date ASC
     `)
@@ -416,7 +423,7 @@ async function handleRevenueExport(env: Env, searchParams: URLSearchParams): Pro
         0 AS ota_fee_amount,
         -c.amount AS net_amount
       FROM costs c
-      JOIN properties p ON p.id = c.property_id
+      JOIN properties p ON p.id = c.property_id AND p.tenant_id = c.tenant_id
       WHERE ${costConditions.join(' AND ')}
       ORDER BY c.date ASC
     `)
@@ -465,7 +472,7 @@ async function handleRevenueExport(env: Env, searchParams: URLSearchParams): Pro
   })
 }
 
-async function handleCreateCost(request: Request, env: Env): Promise<Response> {
+async function handleCreateCost(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<CostInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -489,18 +496,18 @@ async function handleCreateCost(request: Request, env: Env): Promise<Response> {
   }
 
   const property = await env.DB
-    .prepare('SELECT id, name FROM properties WHERE id = ?')
-    .bind(propertyId)
+    .prepare('SELECT id, name FROM properties WHERE id = ? AND tenant_id = ?')
+    .bind(propertyId, tenantId)
     .first<{ id: string; name: string }>()
   if (!property) return jsonError('物件が見つかりません', 404)
 
   const inserted = await env.DB
     .prepare(`
-      INSERT INTO costs (property_id, category, amount, date, description, created_at)
-      VALUES (?, ?, ?, ?, ?, datetime('now'))
+      INSERT INTO costs (tenant_id, property_id, category, amount, date, description, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
       RETURNING id, property_id, category, amount, date, description, created_at
     `)
-    .bind(propertyId, category, Math.round(amount), date, description)
+    .bind(tenantId, propertyId, category, Math.round(amount), date, description)
     .first<{
       id: string
       property_id: string
@@ -517,7 +524,7 @@ async function handleCreateCost(request: Request, env: Env): Promise<Response> {
   })
 }
 
-async function handleListCosts(env: Env, searchParams: URLSearchParams): Promise<Response> {
+async function handleListCosts(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
   const propertyId = searchParams.get('property_id')?.trim()
   const month = searchParams.get('month')?.trim()
 
@@ -525,8 +532,8 @@ async function handleListCosts(env: Env, searchParams: URLSearchParams): Promise
     return jsonError('month は YYYY-MM 形式で指定してください', 400)
   }
 
-  const conditions: string[] = []
-  const bindings: string[] = []
+  const conditions: string[] = ['c.tenant_id = ?']
+  const bindings: string[] = [tenantId]
 
   if (propertyId) {
     conditions.push('c.property_id = ?')
@@ -537,12 +544,12 @@ async function handleListCosts(env: Env, searchParams: URLSearchParams): Promise
     bindings.push(month)
   }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const where = `WHERE ${conditions.join(' AND ')}`
   const rows = await env.DB
     .prepare(`
       SELECT c.id, c.property_id, c.category, c.amount, c.date, c.description, c.created_at, p.name AS property_name
       FROM costs c
-      JOIN properties p ON p.id = c.property_id
+      JOIN properties p ON p.id = c.property_id AND p.tenant_id = c.tenant_id
       ${where}
       ORDER BY c.date DESC, c.created_at DESC
     `)

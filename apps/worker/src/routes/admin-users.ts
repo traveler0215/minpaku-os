@@ -1,4 +1,4 @@
-import { verifyJwt } from '../lib/auth'
+import { getTenantContext, verifyJwt } from '../lib/auth'
 import type { AdminUser, ApiResponse, Env } from '../types'
 
 interface AdminUserCreateInput {
@@ -16,38 +16,44 @@ interface AdminUserPatchInput {
 const ADMIN_ROLES: AdminUser['role'][] = ['owner', 'manager', 'viewer']
 
 export async function adminUserRoutes(request: Request, env: Env): Promise<Response> {
+  const ctx = await getTenantContext(request, env)
+  if (!ctx) return jsonError('Unauthorized', 401)
+  const tenantId = ctx.tenant_id
+
   const url = new URL(request.url)
   const { pathname } = url
 
   if (pathname === '/api/admin-users') {
-    if (request.method === 'GET') return handleListAdminUsers(env)
-    if (request.method === 'POST') return handleCreateAdminUser(request, env)
+    if (request.method === 'GET') return handleListAdminUsers(env, tenantId)
+    if (request.method === 'POST') return handleCreateAdminUser(request, env, tenantId)
     return jsonError('Method Not Allowed', 405)
   }
 
   const adminUserId = getIdFromPath(pathname, '/api/admin-users/')
   if (adminUserId) {
-    if (request.method === 'PATCH') return handlePatchAdminUser(request, env, adminUserId)
-    if (request.method === 'DELETE') return handleDeleteAdminUser(request, env, adminUserId)
+    if (request.method === 'PATCH') return handlePatchAdminUser(request, env, tenantId, adminUserId)
+    if (request.method === 'DELETE') return handleDeleteAdminUser(request, env, tenantId, adminUserId)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListAdminUsers(env: Env): Promise<Response> {
+async function handleListAdminUsers(env: Env, tenantId: string): Promise<Response> {
   const rows = await env.DB
     .prepare(`
       SELECT id, email, name, role, is_active, last_login, created_at
       FROM admin_users
+      WHERE tenant_id = ?
       ORDER BY is_active DESC, created_at ASC, email ASC
     `)
+    .bind(tenantId)
     .all<AdminUser>()
 
   return jsonOk(rows.results)
 }
 
-async function handleCreateAdminUser(request: Request, env: Env): Promise<Response> {
+async function handleCreateAdminUser(request: Request, env: Env, tenantId: string): Promise<Response> {
   const payload = await safeJson<AdminUserCreateInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -68,40 +74,40 @@ async function handleCreateAdminUser(request: Request, env: Env): Promise<Respon
 
   await env.DB
     .prepare(`
-      INSERT INTO admin_users (email, name, role, is_active)
-      VALUES (?, ?, ?, 1)
+      INSERT INTO admin_users (tenant_id, email, name, role, is_active)
+      VALUES (?, ?, ?, ?, 1)
     `)
-    .bind(email, name, role)
+    .bind(tenantId, email, name, role)
     .run()
 
   const created = await env.DB
     .prepare(`
       SELECT id, email, name, role, is_active, last_login, created_at
       FROM admin_users
-      WHERE email = ?
+      WHERE email = ? AND tenant_id = ?
     `)
-    .bind(email)
+    .bind(email, tenantId)
     .first<AdminUser>()
 
   // ワンタイム招待トークンを生成
   const inviteToken = crypto.randomUUID()
   await env.KV.put(
     `invite:${inviteToken}`,
-    JSON.stringify({ user_id: created?.id, email }),
+    JSON.stringify({ user_id: created?.id, email, tenant_id: tenantId }),
     { expirationTtl: 86400 },
   )
 
   return jsonOk({ user: created, invite_token: inviteToken })
 }
 
-async function handlePatchAdminUser(request: Request, env: Env, adminUserId: string): Promise<Response> {
+async function handlePatchAdminUser(request: Request, env: Env, tenantId: string, adminUserId: string): Promise<Response> {
   const existing = await env.DB
     .prepare(`
       SELECT id, email, name, role, is_active, last_login, created_at
       FROM admin_users
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(adminUserId)
+    .bind(adminUserId, tenantId)
     .first<AdminUser>()
 
   if (!existing) return jsonError('管理ユーザーが見つかりません', 404)
@@ -121,41 +127,41 @@ async function handlePatchAdminUser(request: Request, env: Env, adminUserId: str
     .prepare(`
       UPDATE admin_users
       SET name = ?, role = ?, is_active = ?
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(name, role, isActive, adminUserId)
+    .bind(name, role, isActive, adminUserId, tenantId)
     .run()
 
   const updated = await env.DB
     .prepare(`
       SELECT id, email, name, role, is_active, last_login, created_at
       FROM admin_users
-      WHERE id = ?
+      WHERE id = ? AND tenant_id = ?
     `)
-    .bind(adminUserId)
+    .bind(adminUserId, tenantId)
     .first<AdminUser>()
 
   return jsonOk(updated)
 }
 
-async function handleDeleteAdminUser(request: Request, env: Env, adminUserId: string): Promise<Response> {
+async function handleDeleteAdminUser(request: Request, env: Env, tenantId: string, adminUserId: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT id, email FROM admin_users WHERE id = ?')
-    .bind(adminUserId)
+    .prepare('SELECT id, email FROM admin_users WHERE id = ? AND tenant_id = ?')
+    .bind(adminUserId, tenantId)
     .first<{ id: string; email: string }>()
 
   if (!existing) return jsonError('管理ユーザーが見つかりません', 404)
 
-  const currentUser = await getCurrentAdminUser(request, env)
+  const currentUser = await getCurrentAdminUser(request, env, tenantId)
   if (!currentUser) return jsonError('Unauthorized', 401)
   if (currentUser.email === existing.email) return jsonError('自分自身は削除できません', 403)
 
-  await env.DB.prepare('DELETE FROM admin_users WHERE id = ?').bind(adminUserId).run()
+  await env.DB.prepare('DELETE FROM admin_users WHERE id = ? AND tenant_id = ?').bind(adminUserId, tenantId).run()
 
   return jsonOk({ id: adminUserId, deleted: true })
 }
 
-async function getCurrentAdminUser(request: Request, env: Env): Promise<AdminUser | null> {
+async function getCurrentAdminUser(request: Request, env: Env, tenantId: string): Promise<AdminUser | null> {
   const auth = request.headers.get('Authorization')
   if (!auth?.startsWith('Bearer ')) return null
 
@@ -166,9 +172,9 @@ async function getCurrentAdminUser(request: Request, env: Env): Promise<AdminUse
     .prepare(`
       SELECT id, email, name, role, is_active, last_login, created_at
       FROM admin_users
-      WHERE email = ?
+      WHERE email = ? AND tenant_id = ?
     `)
-    .bind(payload.email)
+    .bind(payload.email, tenantId)
     .first<AdminUser>()
 }
 
