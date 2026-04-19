@@ -153,7 +153,6 @@ function extractGuestName(summary: string): string | null {
  */
 export async function syncPropertyIcal(
   db: D1Database,
-  tenantId: string,
   propertyId: string,
   icalUrl: string,
   platform: Reservation['platform']
@@ -167,20 +166,19 @@ export async function syncPropertyIcal(
   for (const event of events) {
     const reservation = icalEventToReservation(event, propertyId, platform)
     const existing = await db
-      .prepare('SELECT id, status, raw_ical_data FROM reservations WHERE property_id = ? AND external_id = ? AND tenant_id = ?')
-      .bind(propertyId, event.uid, tenantId)
+      .prepare('SELECT id, status, raw_ical_data FROM reservations WHERE property_id = ? AND external_id = ?')
+      .bind(propertyId, event.uid)
       .first<{ id: string; status: string; raw_ical_data: string | null }>()
 
     if (!existing) {
       await db
         .prepare(`
           INSERT INTO reservations
-            (tenant_id, property_id, platform, external_id, guest_name, guest_email, guest_count,
+            (property_id, platform, external_id, guest_name, guest_email, guest_count,
              checkin_date, checkout_date, status, notes, raw_ical_data)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .bind(
-          tenantId,
           reservation.property_id,
           reservation.platform,
           reservation.external_id,
@@ -203,7 +201,7 @@ export async function syncPropertyIcal(
           SET checkin_date = ?, checkout_date = ?, status = ?,
               guest_name = ?, notes = ?, raw_ical_data = ?,
               updated_at = datetime('now')
-          WHERE id = ? AND tenant_id = ?
+          WHERE id = ?
         `)
         .bind(
           reservation.checkin_date,
@@ -212,8 +210,7 @@ export async function syncPropertyIcal(
           reservation.guest_name,
           reservation.notes,
           reservation.raw_ical_data,
-          existing.id,
-          tenantId
+          existing.id
         )
         .run()
       if (reservation.status === 'cancelled') cancelled++
@@ -222,6 +219,8 @@ export async function syncPropertyIcal(
   }
 
   // フィードから消えた予約をキャンセル
+  // 対象: iCal同期で作られた予約（external_idあり）、同じ物件・プラットフォーム、
+  //       未来のチェックアウト日、まだキャンセル/ブロックされていないもの
   const today = new Date().toLocaleDateString('ja-JP', {
     timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit'
   }).replace(/\//g, '-')
@@ -229,12 +228,12 @@ export async function syncPropertyIcal(
   const dbReservations = await db
     .prepare(`
       SELECT id, external_id FROM reservations
-      WHERE property_id = ? AND tenant_id = ? AND platform = ?
+      WHERE property_id = ? AND platform = ?
         AND external_id IS NOT NULL
         AND status NOT IN ('cancelled', 'blocked')
         AND checkout_date >= ?
     `)
-    .bind(propertyId, tenantId, platform, today)
+    .bind(propertyId, platform, today)
     .all<{ id: string; external_id: string }>()
 
   for (const row of dbReservations.results) {
@@ -243,9 +242,9 @@ export async function syncPropertyIcal(
         .prepare(`
           UPDATE reservations
           SET status = 'cancelled', updated_at = datetime('now')
-          WHERE id = ? AND tenant_id = ?
+          WHERE id = ?
         `)
-        .bind(row.id, tenantId)
+        .bind(row.id)
         .run()
       cancelled++
     }

@@ -1,4 +1,3 @@
-import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, MessageDraft, Reservation } from '../types'
 
 interface GenerateMessageInput {
@@ -21,39 +20,35 @@ interface AgentGenerateResponse {
 }
 
 export async function messageDraftRoutes(request: Request, env: Env): Promise<Response> {
-  const ctx = await getTenantContext(request, env)
-  if (!ctx) return jsonError('Unauthorized', 401)
-  const tenantId = ctx.tenant_id
-
   const url = new URL(request.url)
   const { pathname, searchParams } = url
   const draftId = getIdFromPath(pathname, '/api/messages/')
 
   if (pathname === '/api/messages/generate') {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleGenerateMessage(request, env, tenantId)
+    return handleGenerateMessage(request, env)
   }
 
   if (pathname === '/api/messages') {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
-    return handleListMessages(env, tenantId, searchParams)
+    return handleListMessages(env, searchParams)
   }
 
   if (pathname.endsWith('/send') && pathname.startsWith('/api/messages/')) {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
     const id = pathname.slice('/api/messages/'.length, -'/send'.length)
-    return handleSendMessage(request, env, tenantId, id)
+    return handleSendMessage(request, env, id)
   }
 
   if (draftId) {
     if (request.method !== 'PATCH') return jsonError('Method Not Allowed', 405)
-    return handlePatchMessage(request, env, tenantId, draftId)
+    return handlePatchMessage(request, env, draftId)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleGenerateMessage(request: Request, env: Env, tenantId: string): Promise<Response> {
+async function handleGenerateMessage(request: Request, env: Env): Promise<Response> {
   if (!env.AGENT_ENDPOINT?.trim()) {
     return jsonError('AGENT_ENDPOINT が設定されていません', 500)
   }
@@ -72,8 +67,8 @@ async function handleGenerateMessage(request: Request, env: Env, tenantId: strin
   }
 
   const reservation = await env.DB
-    .prepare('SELECT * FROM reservations WHERE id = ? AND tenant_id = ?')
-    .bind(reservationId, tenantId)
+    .prepare('SELECT * FROM reservations WHERE id = ?')
+    .bind(reservationId)
     .first<Reservation>()
 
   if (!reservation) {
@@ -82,8 +77,8 @@ async function handleGenerateMessage(request: Request, env: Env, tenantId: strin
 
   // 物件詳細情報を取得してメッセージ生成に渡す
   const property = await env.DB
-    .prepare('SELECT name, address, description, amenities, access_info, house_rules, wifi_ssid, wifi_password, emergency_contact, checkin_time, checkout_time, max_guests FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(reservation.property_id, tenantId)
+    .prepare('SELECT name, address, description, amenities, access_info, house_rules, wifi_ssid, wifi_password, emergency_contact, checkin_time, checkout_time, max_guests FROM properties WHERE id = ?')
+    .bind(reservation.property_id)
     .first()
 
   const agentRes = await fetch(joinUrl(env.AGENT_ENDPOINT, '/generate-message'), {
@@ -113,18 +108,18 @@ async function handleGenerateMessage(request: Request, env: Env, tenantId: strin
   const inserted = await env.DB
     .prepare(`
       INSERT INTO message_drafts (
-        tenant_id, reservation_id, message_type, original_text, draft_text, final_text, language, status, created_at, updated_at
+        reservation_id, message_type, original_text, draft_text, final_text, language, status, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, NULL, ?, 'draft', datetime('now'), datetime('now'))
+      VALUES (?, ?, ?, ?, NULL, ?, 'draft', datetime('now'), datetime('now'))
       RETURNING *
     `)
-    .bind(tenantId, reservationId, messageType, inquiryText, draftText, language)
+    .bind(reservationId, messageType, inquiryText, draftText, language)
     .first<MessageDraft>()
 
   return jsonOk(inserted)
 }
 
-async function handleListMessages(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
+async function handleListMessages(env: Env, searchParams: URLSearchParams): Promise<Response> {
   const reservationId = searchParams.get('reservation_id')?.trim()
 
   const rows = reservationId
@@ -132,28 +127,26 @@ async function handleListMessages(env: Env, tenantId: string, searchParams: URLS
         .prepare(`
           SELECT *
           FROM message_drafts
-          WHERE reservation_id = ? AND tenant_id = ?
+          WHERE reservation_id = ?
           ORDER BY created_at DESC
         `)
-        .bind(reservationId, tenantId)
+        .bind(reservationId)
         .all<MessageDraft>()
     : await env.DB
         .prepare(`
           SELECT *
           FROM message_drafts
-          WHERE tenant_id = ?
           ORDER BY created_at DESC
         `)
-        .bind(tenantId)
         .all<MessageDraft>()
 
   return jsonOk(rows.results)
 }
 
-async function handlePatchMessage(request: Request, env: Env, tenantId: string, id: string): Promise<Response> {
+async function handlePatchMessage(request: Request, env: Env, id: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT * FROM message_drafts WHERE id = ? AND tenant_id = ?')
-    .bind(id, tenantId)
+    .prepare('SELECT * FROM message_drafts WHERE id = ?')
+    .bind(id)
     .first<MessageDraft>()
 
   if (!existing) return jsonError('下書きが見つかりません', 404)
@@ -178,23 +171,23 @@ async function handlePatchMessage(request: Request, env: Env, tenantId: string, 
     .prepare(`
       UPDATE message_drafts
       SET draft_text = ?, final_text = ?, status = ?, language = ?, updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(draftText, finalText, status, language, id, tenantId)
+    .bind(draftText, finalText, status, language, id)
     .run()
 
   const updated = await env.DB
-    .prepare('SELECT * FROM message_drafts WHERE id = ? AND tenant_id = ?')
-    .bind(id, tenantId)
+    .prepare('SELECT * FROM message_drafts WHERE id = ?')
+    .bind(id)
     .first<MessageDraft>()
 
   return jsonOk(updated)
 }
 
-async function handleSendMessage(request: Request, env: Env, tenantId: string, id: string): Promise<Response> {
+async function handleSendMessage(request: Request, env: Env, id: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT * FROM message_drafts WHERE id = ? AND tenant_id = ?')
-    .bind(id, tenantId)
+    .prepare('SELECT * FROM message_drafts WHERE id = ?')
+    .bind(id)
     .first<MessageDraft>()
 
   if (!existing) return jsonError('下書きが見つかりません', 404)
@@ -209,14 +202,14 @@ async function handleSendMessage(request: Request, env: Env, tenantId: string, i
     .prepare(`
       UPDATE message_drafts
       SET final_text = ?, status = 'sent', updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(finalText, id, tenantId)
+    .bind(finalText, id)
     .run()
 
   const updated = await env.DB
-    .prepare('SELECT * FROM message_drafts WHERE id = ? AND tenant_id = ?')
-    .bind(id, tenantId)
+    .prepare('SELECT * FROM message_drafts WHERE id = ?')
+    .bind(id)
     .first<MessageDraft>()
 
   return jsonOk(updated)

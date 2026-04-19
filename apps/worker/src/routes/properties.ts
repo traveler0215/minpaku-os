@@ -1,5 +1,4 @@
 import { syncPropertyIcal } from '../lib/ical'
-import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, Property } from '../types'
 
 interface PropertyInput {
@@ -17,61 +16,54 @@ interface PropertyInput {
 }
 
 export async function propertyRoutes(request: Request, env: Env): Promise<Response> {
-  const ctx = await getTenantContext(request, env)
-  if (!ctx) return jsonError('Unauthorized', 401)
-  const tenantId = ctx.tenant_id
-
   const url = new URL(request.url)
   const { pathname } = url
 
   if (pathname === '/api/properties') {
-    if (request.method === 'GET') return handleListProperties(env, tenantId)
-    if (request.method === 'POST') return handleCreateProperty(request, env, tenantId)
+    if (request.method === 'GET') return handleListProperties(env)
+    if (request.method === 'POST') return handleCreateProperty(request, env)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (pathname.endsWith('/sync-ical') && pathname.startsWith('/api/properties/')) {
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
     const propertyId = pathname.slice('/api/properties/'.length, -'/sync-ical'.length)
-    return handleSyncIcal(env, tenantId, propertyId)
+    return handleSyncIcal(env, propertyId)
   }
 
   if (pathname.endsWith('/sync-logs') && pathname.startsWith('/api/properties/')) {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
     const propertyId = pathname.slice('/api/properties/'.length, -'/sync-logs'.length)
-    return handleGetSyncLogs(env, tenantId, propertyId)
+    return handleGetSyncLogs(env, propertyId)
   }
 
   const propertyId = getIdFromPath(pathname, '/api/properties/')
   if (propertyId) {
-    if (request.method === 'GET') return handleGetProperty(env, tenantId, propertyId)
-    if (request.method === 'PATCH') return handlePatchProperty(request, env, tenantId, propertyId)
-    if (request.method === 'DELETE') return handleDeleteProperty(env, tenantId, propertyId)
+    if (request.method === 'GET') return handleGetProperty(env, propertyId)
+    if (request.method === 'PATCH') return handlePatchProperty(request, env, propertyId)
+    if (request.method === 'DELETE') return handleDeleteProperty(env, propertyId)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListProperties(env: Env, tenantId: string): Promise<Response> {
-  const rows = await env.DB
-    .prepare('SELECT * FROM properties WHERE tenant_id = ? ORDER BY name ASC')
-    .bind(tenantId)
-    .all<Property>()
+async function handleListProperties(env: Env): Promise<Response> {
+  const rows = await env.DB.prepare('SELECT * FROM properties ORDER BY name ASC').all<Property>()
   return jsonOk(rows.results)
 }
 
-async function handleGetProperty(env: Env, tenantId: string, propertyId: string): Promise<Response> {
+async function handleGetProperty(env: Env, propertyId: string): Promise<Response> {
   const property = await env.DB
-    .prepare('SELECT * FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
+    .prepare('SELECT * FROM properties WHERE id = ?')
+    .bind(propertyId)
     .first<Property>()
 
   if (!property) return jsonError('物件が見つかりません', 404)
   return jsonOk(property)
 }
 
-async function handleCreateProperty(request: Request, env: Env, tenantId: string): Promise<Response> {
+async function handleCreateProperty(request: Request, env: Env): Promise<Response> {
   const payload = await safeJson<PropertyInput>(request)
   if (!payload) return jsonError('Invalid JSON', 400)
 
@@ -83,15 +75,14 @@ async function handleCreateProperty(request: Request, env: Env, tenantId: string
   await env.DB
     .prepare(`
       INSERT INTO properties (
-        id, tenant_id, name, address, checkin_time, checkout_time,
+        id, name, address, checkin_time, checkout_time,
         airbnb_ical_url, booking_ical_url, own_site_ical_url, cleaning_manual_url,
         lock_adapter, lock_config_json, annual_day_limit,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
     `)
     .bind(
       propertyId,
-      tenantId,
       validated.value.name,
       validated.value.address,
       validated.value.checkin_time,
@@ -106,10 +97,7 @@ async function handleCreateProperty(request: Request, env: Env, tenantId: string
     )
     .run()
 
-  const property = await env.DB
-    .prepare('SELECT * FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<Property>()
+  const property = await env.DB.prepare('SELECT * FROM properties WHERE id = ?').bind(propertyId).first<Property>()
 
   return jsonOk({
     id: propertyId,
@@ -117,11 +105,8 @@ async function handleCreateProperty(request: Request, env: Env, tenantId: string
   })
 }
 
-async function handlePatchProperty(request: Request, env: Env, tenantId: string, propertyId: string): Promise<Response> {
-  const existing = await env.DB
-    .prepare('SELECT * FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<Property>()
+async function handlePatchProperty(request: Request, env: Env, propertyId: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT * FROM properties WHERE id = ?').bind(propertyId).first<Property>()
   if (!existing) return jsonError('物件が見つかりません', 404)
 
   const payload = await safeJson<PropertyInput>(request)
@@ -137,7 +122,7 @@ async function handlePatchProperty(request: Request, env: Env, tenantId: string,
           airbnb_ical_url = ?, booking_ical_url = ?, own_site_ical_url = ?, cleaning_manual_url = ?,
           lock_adapter = ?, lock_config_json = ?, annual_day_limit = ?,
           updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
     .bind(
       validated.value.name,
@@ -151,48 +136,38 @@ async function handlePatchProperty(request: Request, env: Env, tenantId: string,
       validated.value.lock_adapter,
       validated.value.lock_config_json,
       validated.value.annual_day_limit,
-      propertyId,
-      tenantId
+      propertyId
     )
     .run()
 
-  const updated = await env.DB
-    .prepare('SELECT * FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<Property>()
+  const updated = await env.DB.prepare('SELECT * FROM properties WHERE id = ?').bind(propertyId).first<Property>()
   return jsonOk(updated)
 }
 
-async function handleDeleteProperty(env: Env, tenantId: string, propertyId: string): Promise<Response> {
-  const existing = await env.DB
-    .prepare('SELECT id FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<{ id: string }>()
+async function handleDeleteProperty(env: Env, propertyId: string): Promise<Response> {
+  const existing = await env.DB.prepare('SELECT id FROM properties WHERE id = ?').bind(propertyId).first<{ id: string }>()
   if (!existing) return jsonError('物件が見つかりません', 404)
 
   const activeReservation = await env.DB
-    .prepare(`SELECT id FROM reservations WHERE property_id = ? AND tenant_id = ? AND status NOT IN ('cancelled', 'blocked') LIMIT 1`)
-    .bind(propertyId, tenantId)
+    .prepare(`SELECT id FROM reservations WHERE property_id = ? AND status NOT IN ('cancelled', 'blocked') LIMIT 1`)
+    .bind(propertyId)
     .first<{ id: string }>()
   if (activeReservation) {
     return jsonError('有効な予約が存在するため削除できません。先に予約をキャンセルしてください。', 409)
   }
 
-  await env.DB
-    .prepare('DELETE FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .run()
+  await env.DB.prepare('DELETE FROM properties WHERE id = ?').bind(propertyId).run()
   return jsonOk({ id: propertyId, deleted: true })
 }
 
-async function handleSyncIcal(env: Env, tenantId: string, propertyId: string): Promise<Response> {
+async function handleSyncIcal(env: Env, propertyId: string): Promise<Response> {
   const property = await env.DB
     .prepare(`
       SELECT id, airbnb_ical_url, booking_ical_url, own_site_ical_url
       FROM properties
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(propertyId, tenantId)
+    .bind(propertyId)
     .first<{ id: string; airbnb_ical_url: string | null; booking_ical_url: string | null; own_site_ical_url: string | null }>()
 
   if (!property) return jsonError('物件が見つかりません', 404)
@@ -207,13 +182,13 @@ async function handleSyncIcal(env: Env, tenantId: string, propertyId: string): P
 
   for (const target of syncTargets) {
     try {
-      const result = await syncPropertyIcal(env.DB, tenantId, propertyId, target.url, target.platform)
+      const result = await syncPropertyIcal(env.DB, propertyId, target.url, target.platform)
       await env.DB
         .prepare(`
-          INSERT INTO ical_sync_logs (tenant_id, property_id, platform, status, added_count, updated_count, cancelled_count)
-          VALUES (?, ?, ?, 'success', ?, ?, ?)
+          INSERT INTO ical_sync_logs (property_id, platform, status, added_count, updated_count, cancelled_count)
+          VALUES (?, ?, 'success', ?, ?, ?)
         `)
-        .bind(tenantId, propertyId, target.platform, result.added, result.updated, result.cancelled)
+        .bind(propertyId, target.platform, result.added, result.updated, result.cancelled)
         .run()
 
       results.push({ platform: target.platform, status: 'success', ...result })
@@ -221,10 +196,10 @@ async function handleSyncIcal(env: Env, tenantId: string, propertyId: string): P
       const message = error instanceof Error ? error.message : String(error)
       await env.DB
         .prepare(`
-          INSERT INTO ical_sync_logs (tenant_id, property_id, platform, status, error_message)
-          VALUES (?, ?, ?, 'error', ?)
+          INSERT INTO ical_sync_logs (property_id, platform, status, error_message)
+          VALUES (?, ?, 'error', ?)
         `)
-        .bind(tenantId, propertyId, target.platform, message)
+        .bind(propertyId, target.platform, message)
         .run()
 
       results.push({ platform: target.platform, status: 'error', error: message })
@@ -234,22 +209,19 @@ async function handleSyncIcal(env: Env, tenantId: string, propertyId: string): P
   return jsonOk(results)
 }
 
-async function handleGetSyncLogs(env: Env, tenantId: string, propertyId: string): Promise<Response> {
-  const property = await env.DB
-    .prepare('SELECT id FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<{ id: string }>()
+async function handleGetSyncLogs(env: Env, propertyId: string): Promise<Response> {
+  const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ?').bind(propertyId).first<{ id: string }>()
   if (!property) return jsonError('物件が見つかりません', 404)
 
   const logs = await env.DB
     .prepare(`
       SELECT *
       FROM ical_sync_logs
-      WHERE property_id = ? AND tenant_id = ?
+      WHERE property_id = ?
       ORDER BY synced_at DESC
       LIMIT 50
     `)
-    .bind(propertyId, tenantId)
+    .bind(propertyId)
     .all()
 
   return jsonOk(logs.results)

@@ -1,4 +1,3 @@
-import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, GuestRegistryEntry, Reservation } from '../types'
 
 interface GuestCreateInput {
@@ -20,35 +19,31 @@ interface GuestRow {
 }
 
 export async function guestRoutes(request: Request, env: Env): Promise<Response> {
-  const ctx = await getTenantContext(request, env)
-  if (!ctx) return jsonError('Unauthorized', 401)
-  const tenantId = ctx.tenant_id
-
   const url = new URL(request.url)
   const { pathname } = url
 
   if (pathname.endsWith('/guests') && pathname.startsWith('/api/reservations/')) {
     const reservationId = pathname.slice('/api/reservations/'.length, -'/guests'.length)
     if (!reservationId || reservationId.includes('/')) return jsonError('Not Found', 404)
-    if (request.method === 'GET') return handleListGuests(env, tenantId, reservationId)
-    if (request.method === 'POST') return handleCreateGuest(request, env, tenantId, reservationId)
+    if (request.method === 'GET') return handleListGuests(env, reservationId)
+    if (request.method === 'POST') return handleCreateGuest(request, env, reservationId)
     return jsonError('Method Not Allowed', 405)
   }
 
   if (pathname.startsWith('/api/guests/')) {
     const guestId = pathname.slice('/api/guests/'.length)
     if (!guestId || guestId.includes('/')) return jsonError('Not Found', 404)
-    if (request.method === 'DELETE') return handleDeleteGuest(env, tenantId, guestId)
+    if (request.method === 'DELETE') return handleDeleteGuest(env, guestId)
     return jsonError('Method Not Allowed', 405)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListGuests(env: Env, tenantId: string, reservationId: string): Promise<Response> {
+async function handleListGuests(env: Env, reservationId: string): Promise<Response> {
   const reservation = await env.DB
-    .prepare('SELECT id FROM reservations WHERE id = ? AND tenant_id = ?')
-    .bind(reservationId, tenantId)
+    .prepare('SELECT id FROM reservations WHERE id = ?')
+    .bind(reservationId)
     .first<{ id: string }>()
 
   if (!reservation) return jsonError('予約が見つかりません', 404)
@@ -57,19 +52,19 @@ async function handleListGuests(env: Env, tenantId: string, reservationId: strin
     .prepare(`
       SELECT id, reservation_id, full_name, nationality, passport_number, address, created_at
       FROM guest_registry
-      WHERE reservation_id = ? AND tenant_id = ?
+      WHERE reservation_id = ?
       ORDER BY created_at ASC, id ASC
     `)
-    .bind(reservationId, tenantId)
+    .bind(reservationId)
     .all<GuestRow>()
 
   return jsonOk(rows.results.map(toGuestEntry))
 }
 
-async function handleCreateGuest(request: Request, env: Env, tenantId: string, reservationId: string): Promise<Response> {
+async function handleCreateGuest(request: Request, env: Env, reservationId: string): Promise<Response> {
   const reservation = await env.DB
-    .prepare('SELECT id, checkin_date, checkout_date FROM reservations WHERE id = ? AND tenant_id = ?')
-    .bind(reservationId, tenantId)
+    .prepare('SELECT id, checkin_date, checkout_date FROM reservations WHERE id = ?')
+    .bind(reservationId)
     .first<Pick<Reservation, 'id' | 'checkin_date' | 'checkout_date'>>()
 
   if (!reservation) return jsonError('予約が見つかりません', 404)
@@ -88,13 +83,12 @@ async function handleCreateGuest(request: Request, env: Env, tenantId: string, r
   const created = await env.DB
     .prepare(`
       INSERT INTO guest_registry (
-        tenant_id, reservation_id, full_name, nationality, passport_number, address, checkin_date, checkout_date
+        reservation_id, full_name, nationality, passport_number, address, checkin_date, checkout_date
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
       RETURNING id, reservation_id, full_name, nationality, passport_number, address, created_at
     `)
     .bind(
-      tenantId,
       reservationId,
       guestName,
       nationality,
@@ -108,15 +102,15 @@ async function handleCreateGuest(request: Request, env: Env, tenantId: string, r
   return jsonOk(toGuestEntry(created))
 }
 
-async function handleDeleteGuest(env: Env, tenantId: string, guestId: string): Promise<Response> {
+async function handleDeleteGuest(env: Env, guestId: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT id FROM guest_registry WHERE id = ? AND tenant_id = ?')
-    .bind(guestId, tenantId)
+    .prepare('SELECT id FROM guest_registry WHERE id = ?')
+    .bind(guestId)
     .first<{ id: string }>()
 
   if (!existing) return jsonError('宿泊者が見つかりません', 404)
 
-  await env.DB.prepare('DELETE FROM guest_registry WHERE id = ? AND tenant_id = ?').bind(guestId, tenantId).run()
+  await env.DB.prepare('DELETE FROM guest_registry WHERE id = ?').bind(guestId).run()
   return jsonOk({ id: guestId, deleted: true })
 }
 

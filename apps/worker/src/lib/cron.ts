@@ -11,8 +11,8 @@ import { multicastText, pushText, pushConfirm, pushButtonLink, formatDateJa } fr
  */
 export async function handleICalSync(env: Env): Promise<void> {
   const properties = await env.DB
-    .prepare('SELECT id, tenant_id, name, airbnb_ical_url, booking_ical_url, own_site_ical_url FROM properties')
-    .all<{ id: string; tenant_id: string; name: string; airbnb_ical_url: string | null; booking_ical_url: string | null; own_site_ical_url: string | null }>()
+    .prepare('SELECT id, name, airbnb_ical_url, booking_ical_url, own_site_ical_url FROM properties')
+    .all<{ id: string; name: string; airbnb_ical_url: string | null; booking_ical_url: string | null; own_site_ical_url: string | null }>()
 
   for (const property of properties.results) {
     const syncs: Array<{ platform: 'airbnb' | 'booking' | 'direct'; url: string }> = []
@@ -22,23 +22,25 @@ export async function handleICalSync(env: Env): Promise<void> {
 
     for (const { platform, url } of syncs) {
       try {
-        const result = await syncPropertyIcal(env.DB, property.tenant_id, property.id, url, platform)
+        const result = await syncPropertyIcal(env.DB, property.id, url, platform)
 
-        const doubles = await detectDoubleBooking(env.DB, property.tenant_id, property.id)
+        // ダブルブッキング検知
+        const doubles = await detectDoubleBooking(env.DB, property.id)
         if (doubles.length > 0) {
           await notifyDoubleBooking(env, property.name, doubles)
         }
 
+        // 同期ログ保存
         await env.DB.prepare(`
-          INSERT INTO ical_sync_logs (tenant_id, property_id, platform, status, added_count, updated_count, cancelled_count)
-          VALUES (?, ?, ?, 'success', ?, ?, ?)
-        `).bind(property.tenant_id, property.id, platform, result.added, result.updated, result.cancelled).run()
+          INSERT INTO ical_sync_logs (property_id, platform, status, added_count, updated_count, cancelled_count)
+          VALUES (?, ?, 'success', ?, ?, ?)
+        `).bind(property.id, platform, result.added, result.updated, result.cancelled).run()
 
       } catch (err) {
         await env.DB.prepare(`
-          INSERT INTO ical_sync_logs (tenant_id, property_id, platform, status, error_message)
-          VALUES (?, ?, ?, 'error', ?)
-        `).bind(property.tenant_id, property.id, platform, String(err)).run()
+          INSERT INTO ical_sync_logs (property_id, platform, status, error_message)
+          VALUES (?, ?, 'error', ?)
+        `).bind(property.id, platform, String(err)).run()
       }
     }
   }
@@ -53,16 +55,17 @@ export async function handleDailyTasks(env: Env, cron: string): Promise<void> {
   const today = todayJST()
 
   if (cron === '0 8 * * *') {
+    // 当日チェックアウト → 清掃タスク自動発行
     const checkouts = await env.DB
       .prepare(`
-        SELECT r.id, r.tenant_id, r.property_id, r.checkout_date, r.checkout_time,
+        SELECT r.id, r.property_id, r.checkout_date, r.checkout_time,
                p.name AS property_name, p.checkout_time AS default_checkout_time
         FROM reservations r
-        JOIN properties p ON p.id = r.property_id AND p.tenant_id = r.tenant_id
+        JOIN properties p ON p.id = r.property_id
         WHERE r.checkout_date = ? AND r.status = 'confirmed'
       `)
       .bind(today)
-      .all<{ id: string; tenant_id: string; property_id: string; property_name: string; checkout_time: string | null; default_checkout_time: string }>()
+      .all<{ id: string; property_id: string; property_name: string; checkout_time: string | null; default_checkout_time: string }>()
 
     for (const checkout of checkouts.results) {
       await dispatchCleaningTask(env, checkout)
@@ -239,7 +242,6 @@ export async function handleWeeklyReport(env: Env): Promise<void> {
 
 interface CheckoutInfo {
   id: string
-  tenant_id: string
   property_id: string
   property_name: string
   checkout_time: string | null
@@ -247,15 +249,15 @@ interface CheckoutInfo {
 }
 
 async function dispatchCleaningTask(env: Env, checkout: CheckoutInfo): Promise<void> {
+  // 担当物件のスタッフを取得
   const staff = await env.DB
     .prepare(`
       SELECT s.id, s.line_user_id, s.name
       FROM staff s
       JOIN staff_properties sp ON sp.staff_id = s.id
-      WHERE sp.property_id = ? AND sp.tenant_id = ?
-        AND s.role IN ('cleaner', 'manager') AND s.is_active = 1
+      WHERE sp.property_id = ? AND s.role IN ('cleaner', 'manager') AND s.is_active = 1
     `)
-    .bind(checkout.property_id, checkout.tenant_id)
+    .bind(checkout.property_id)
     .all<{ id: string; line_user_id: string; name: string }>()
 
   if (staff.results.length === 0) return
@@ -263,11 +265,12 @@ async function dispatchCleaningTask(env: Env, checkout: CheckoutInfo): Promise<v
   const checkoutTime = checkout.checkout_time ?? checkout.default_checkout_time
   const text = `【清掃依頼】\n📍 ${checkout.property_name}\n📅 本日 ${checkoutTime}以降\n⏱ 完了したら「完了」と写真を送ってください\n\n承諾→「OK」 辞退→「NG」`
 
+  // 最初のスタッフに打診（NG なら次のスタッフへ）
   const first = staff.results[0]
   await env.DB.prepare(`
-    INSERT INTO shifts (tenant_id, staff_id, property_id, reservation_id, task_type, date, status, proposed_by)
-    VALUES (?, ?, ?, ?, 'cleaning', ?, 'notified', 'system')
-  `).bind(checkout.tenant_id, first.id, checkout.property_id, checkout.id, todayJST()).run()
+    INSERT INTO shifts (staff_id, property_id, reservation_id, task_type, date, status, proposed_by)
+    VALUES (?, ?, ?, 'cleaning', ?, 'notified', 'system')
+  `).bind(first.id, checkout.property_id, checkout.id, todayJST()).run()
 
   await pushConfirm(
     first.line_user_id,
@@ -282,7 +285,6 @@ async function dispatchCleaningTask(env: Env, checkout: CheckoutInfo): Promise<v
 
 async function detectDoubleBooking(
   db: D1Database,
-  tenantId: string,
   propertyId: string
 ): Promise<Array<{ a: string; b: string; date: string }>> {
   const rows = await db.prepare(`
@@ -290,14 +292,13 @@ async function detectDoubleBooking(
     FROM reservations a
     JOIN reservations b ON
       a.property_id = b.property_id AND
-      a.tenant_id = b.tenant_id AND
       a.id < b.id AND
       a.checkin_date < b.checkout_date AND
       b.checkin_date < a.checkout_date
-    WHERE a.property_id = ? AND a.tenant_id = ?
+    WHERE a.property_id = ?
       AND a.status NOT IN ('cancelled', 'blocked')
       AND b.status NOT IN ('cancelled', 'blocked')
-  `).bind(propertyId, tenantId).all<{ a: string; b: string; date: string }>()
+  `).bind(propertyId).all<{ a: string; b: string; date: string }>()
   return rows.results
 }
 

@@ -40,7 +40,7 @@ ALTER TABLE cleaning_checklist_items   ADD COLUMN tenant_id TEXT NOT NULL DEFAUL
 ALTER TABLE cleaning_checklist_results ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE message_templates    ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE labor_costs          ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
--- staff_auto_messages は PK 変更のため下記で再構築（ADD COLUMN では不十分）
+ALTER TABLE staff_auto_messages  ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default';
 
 -- ─── staff テーブルは UNIQUE 制約を変更するため再構築 ───
 -- 旧: line_user_id UNIQUE (グローバル)
@@ -68,23 +68,6 @@ FROM staff;
 
 DROP TABLE staff;
 ALTER TABLE staff_new RENAME TO staff;
-
--- ─── staff_auto_messages の PK を (tenant_id, role, event_type) に変更 ─
-CREATE TABLE staff_auto_messages_new (
-  tenant_id  TEXT NOT NULL DEFAULT 'default',
-  role       TEXT NOT NULL,
-  event_type TEXT NOT NULL,
-  body_text  TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (tenant_id, role, event_type)
-);
-
-INSERT INTO staff_auto_messages_new (tenant_id, role, event_type, body_text, updated_at)
-SELECT 'default', role, event_type, body_text, updated_at
-FROM staff_auto_messages;
-
-DROP TABLE staff_auto_messages;
-ALTER TABLE staff_auto_messages_new RENAME TO staff_auto_messages;
 
 -- ─── 既存ビュー annual_days_used を tenant_id 対応で再構築 ─
 DROP VIEW IF EXISTS annual_days_used;

@@ -1,4 +1,3 @@
-import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, CleaningChecklistItem, CleaningChecklistResult, Env } from '../types'
 
 interface ChecklistCreateInput {
@@ -20,17 +19,13 @@ interface ShiftChecklistRow extends CleaningChecklistItem {
 }
 
 export async function checklistRoutes(request: Request, env: Env): Promise<Response> {
-  const ctx = await getTenantContext(request, env)
-  if (!ctx) return jsonError('Unauthorized', 401)
-  const tenantId = ctx.tenant_id
-
   const url = new URL(request.url)
   const { pathname } = url
 
   if (pathname.startsWith('/api/properties/') && pathname.endsWith('/checklist')) {
     const propertyId = pathname.slice('/api/properties/'.length, -'/checklist'.length)
-    if (request.method === 'GET') return handleListPropertyChecklist(env, tenantId, propertyId)
-    if (request.method === 'POST') return handleCreateChecklistItem(request, env, tenantId, propertyId)
+    if (request.method === 'GET') return handleListPropertyChecklist(env, propertyId)
+    if (request.method === 'POST') return handleCreateChecklistItem(request, env, propertyId)
     return jsonError('Method Not Allowed', 405)
   }
 
@@ -41,47 +36,41 @@ export async function checklistRoutes(request: Request, env: Env): Promise<Respo
     if (!shiftId) return jsonError('Not Found', 404)
     if (!itemId) {
       if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
-      return handleListShiftChecklist(env, tenantId, shiftId)
+      return handleListShiftChecklist(env, shiftId)
     }
     if (request.method !== 'POST') return jsonError('Method Not Allowed', 405)
-    return handleUpsertChecklistResult(request, env, tenantId, shiftId, itemId)
+    return handleUpsertChecklistResult(request, env, shiftId, itemId)
   }
 
   if (pathname.startsWith('/api/checklist/')) {
     const itemId = pathname.slice('/api/checklist/'.length)
     if (!itemId || itemId.includes('/')) return jsonError('Not Found', 404)
     if (request.method !== 'DELETE') return jsonError('Method Not Allowed', 405)
-    return handleDeleteChecklistItem(env, tenantId, itemId)
+    return handleDeleteChecklistItem(env, itemId)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleListPropertyChecklist(env: Env, tenantId: string, propertyId: string): Promise<Response> {
-  const property = await env.DB
-    .prepare('SELECT id FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<{ id: string }>()
+async function handleListPropertyChecklist(env: Env, propertyId: string): Promise<Response> {
+  const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ?').bind(propertyId).first<{ id: string }>()
   if (!property) return jsonError('物件が見つかりません', 404)
 
   const rows = await env.DB
     .prepare(`
       SELECT id, property_id, label, sort_order, created_at
       FROM cleaning_checklist_items
-      WHERE property_id = ? AND tenant_id = ?
+      WHERE property_id = ?
       ORDER BY sort_order ASC, created_at ASC
     `)
-    .bind(propertyId, tenantId)
+    .bind(propertyId)
     .all<CleaningChecklistItem>()
 
   return jsonOk(rows.results)
 }
 
-async function handleCreateChecklistItem(request: Request, env: Env, tenantId: string, propertyId: string): Promise<Response> {
-  const property = await env.DB
-    .prepare('SELECT id FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
-    .first<{ id: string }>()
+async function handleCreateChecklistItem(request: Request, env: Env, propertyId: string): Promise<Response> {
+  const property = await env.DB.prepare('SELECT id FROM properties WHERE id = ?').bind(propertyId).first<{ id: string }>()
   if (!property) return jsonError('物件が見つかりません', 404)
 
   const payload = await safeJson<ChecklistCreateInput>(request)
@@ -94,39 +83,33 @@ async function handleCreateChecklistItem(request: Request, env: Env, tenantId: s
 
   const inserted = await env.DB
     .prepare(`
-      INSERT INTO cleaning_checklist_items (tenant_id, property_id, label, sort_order, created_at)
-      VALUES (?, ?, ?, ?, datetime('now'))
+      INSERT INTO cleaning_checklist_items (property_id, label, sort_order, created_at)
+      VALUES (?, ?, ?, datetime('now'))
       RETURNING id, property_id, label, sort_order, created_at
     `)
-    .bind(tenantId, propertyId, label, sortOrder)
+    .bind(propertyId, label, sortOrder)
     .first<CleaningChecklistItem>()
 
   return jsonOk(inserted)
 }
 
-async function handleDeleteChecklistItem(env: Env, tenantId: string, itemId: string): Promise<Response> {
+async function handleDeleteChecklistItem(env: Env, itemId: string): Promise<Response> {
   const existing = await env.DB
-    .prepare('SELECT id FROM cleaning_checklist_items WHERE id = ? AND tenant_id = ?')
-    .bind(itemId, tenantId)
+    .prepare('SELECT id FROM cleaning_checklist_items WHERE id = ?')
+    .bind(itemId)
     .first<{ id: string }>()
   if (!existing) return jsonError('チェック項目が見つかりません', 404)
 
-  await env.DB
-    .prepare('DELETE FROM cleaning_checklist_results WHERE item_id = ? AND tenant_id = ?')
-    .bind(itemId, tenantId)
-    .run()
-  await env.DB
-    .prepare('DELETE FROM cleaning_checklist_items WHERE id = ? AND tenant_id = ?')
-    .bind(itemId, tenantId)
-    .run()
+  await env.DB.prepare('DELETE FROM cleaning_checklist_results WHERE item_id = ?').bind(itemId).run()
+  await env.DB.prepare('DELETE FROM cleaning_checklist_items WHERE id = ?').bind(itemId).run()
 
   return jsonOk({ id: itemId, deleted: true })
 }
 
-async function handleListShiftChecklist(env: Env, tenantId: string, shiftId: string): Promise<Response> {
+async function handleListShiftChecklist(env: Env, shiftId: string): Promise<Response> {
   const shift = await env.DB
-    .prepare('SELECT id, property_id FROM shifts WHERE id = ? AND tenant_id = ?')
-    .bind(shiftId, tenantId)
+    .prepare('SELECT id, property_id FROM shifts WHERE id = ?')
+    .bind(shiftId)
     .first<{ id: string; property_id: string }>()
   if (!shift) return jsonError('シフトが見つかりません', 404)
 
@@ -145,11 +128,11 @@ async function handleListShiftChecklist(env: Env, tenantId: string, shiftId: str
         r.checked_at
       FROM cleaning_checklist_items i
       LEFT JOIN cleaning_checklist_results r
-        ON r.item_id = i.id AND r.shift_id = ? AND r.tenant_id = i.tenant_id
-      WHERE i.property_id = ? AND i.tenant_id = ?
+        ON r.item_id = i.id AND r.shift_id = ?
+      WHERE i.property_id = ?
       ORDER BY i.sort_order ASC, i.created_at ASC
     `)
-    .bind(shiftId, shift.property_id, tenantId)
+    .bind(shiftId, shift.property_id)
     .all<ShiftChecklistRow>()
 
   return jsonOk(rows.results.map((row) => ({
@@ -169,16 +152,16 @@ async function handleListShiftChecklist(env: Env, tenantId: string, shiftId: str
   })))
 }
 
-async function handleUpsertChecklistResult(request: Request, env: Env, tenantId: string, shiftId: string, itemId: string): Promise<Response> {
+async function handleUpsertChecklistResult(request: Request, env: Env, shiftId: string, itemId: string): Promise<Response> {
   const shift = await env.DB
-    .prepare('SELECT id, property_id FROM shifts WHERE id = ? AND tenant_id = ?')
-    .bind(shiftId, tenantId)
+    .prepare('SELECT id, property_id FROM shifts WHERE id = ?')
+    .bind(shiftId)
     .first<{ id: string; property_id: string }>()
   if (!shift) return jsonError('シフトが見つかりません', 404)
 
   const item = await env.DB
-    .prepare('SELECT id, property_id FROM cleaning_checklist_items WHERE id = ? AND tenant_id = ?')
-    .bind(itemId, tenantId)
+    .prepare('SELECT id, property_id FROM cleaning_checklist_items WHERE id = ?')
+    .bind(itemId)
     .first<{ id: string; property_id: string }>()
   if (!item) return jsonError('チェック項目が見つかりません', 404)
   if (item.property_id !== shift.property_id) return jsonError('シフトとチェック項目の物件が一致しません', 400)
@@ -191,24 +174,24 @@ async function handleUpsertChecklistResult(request: Request, env: Env, tenantId:
 
   await env.DB
     .prepare(`
-      INSERT INTO cleaning_checklist_results (tenant_id, shift_id, item_id, checked, photo_url, checked_at)
-      VALUES (?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END)
+      INSERT INTO cleaning_checklist_results (shift_id, item_id, checked, photo_url, checked_at)
+      VALUES (?, ?, ?, ?, CASE WHEN ? = 1 THEN datetime('now') ELSE NULL END)
       ON CONFLICT(shift_id, item_id)
       DO UPDATE SET
         checked = excluded.checked,
         photo_url = excluded.photo_url,
         checked_at = CASE WHEN excluded.checked = 1 THEN datetime('now') ELSE NULL END
     `)
-    .bind(tenantId, shiftId, itemId, checked, photoUrl, checked)
+    .bind(shiftId, itemId, checked, photoUrl, checked)
     .run()
 
   const row = await env.DB
     .prepare(`
       SELECT id, shift_id, item_id, checked, photo_url, checked_at
       FROM cleaning_checklist_results
-      WHERE shift_id = ? AND item_id = ? AND tenant_id = ?
+      WHERE shift_id = ? AND item_id = ?
     `)
-    .bind(shiftId, itemId, tenantId)
+    .bind(shiftId, itemId)
     .first<CleaningChecklistResult>()
 
   return jsonOk(row)

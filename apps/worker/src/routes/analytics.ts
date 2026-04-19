@@ -1,4 +1,3 @@
-import { getTenantContext } from '../lib/auth'
 import type { ApiResponse, Env, Reservation } from '../types'
 
 interface OccupancyMonthly {
@@ -9,22 +8,18 @@ interface OccupancyMonthly {
 }
 
 export async function analyticsRoutes(request: Request, env: Env): Promise<Response> {
-  const ctx = await getTenantContext(request, env)
-  if (!ctx) return jsonError('Unauthorized', 401)
-  const tenantId = ctx.tenant_id
-
   const url = new URL(request.url)
   const { pathname, searchParams } = url
 
   if (pathname === '/api/analytics/occupancy') {
     if (request.method !== 'GET') return jsonError('Method Not Allowed', 405)
-    return handleOccupancy(env, tenantId, searchParams)
+    return handleOccupancy(env, searchParams)
   }
 
   return jsonError('Not Found', 404)
 }
 
-async function handleOccupancy(env: Env, tenantId: string, searchParams: URLSearchParams): Promise<Response> {
+async function handleOccupancy(env: Env, searchParams: URLSearchParams): Promise<Response> {
   const propertyId = searchParams.get('property_id')?.trim()
   const from = searchParams.get('from')?.trim()
   const to = searchParams.get('to')?.trim()
@@ -38,8 +33,8 @@ async function handleOccupancy(env: Env, tenantId: string, searchParams: URLSear
   if (from > to) return jsonError('from は to 以下で指定してください', 400)
 
   const property = await env.DB
-    .prepare('SELECT id, name FROM properties WHERE id = ? AND tenant_id = ?')
-    .bind(propertyId, tenantId)
+    .prepare('SELECT id, name FROM properties WHERE id = ?')
+    .bind(propertyId)
     .first<{ id: string; name: string }>()
   if (!property) return jsonError('物件が見つかりません', 404)
 
@@ -50,13 +45,12 @@ async function handleOccupancy(env: Env, tenantId: string, searchParams: URLSear
              created_at, updated_at
       FROM reservations
       WHERE property_id = ?
-        AND tenant_id = ?
         AND status IN ('confirmed', 'completed')
         AND checkin_date <= ?
         AND checkout_date > ?
       ORDER BY checkin_date ASC
     `)
-    .bind(propertyId, tenantId, to, from)
+    .bind(propertyId, to, from)
     .all<Reservation>()
 
   const monthly = buildMonthlyOccupancy(rows.results, from, to)

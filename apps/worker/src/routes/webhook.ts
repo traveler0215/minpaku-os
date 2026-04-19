@@ -11,7 +11,6 @@ import { createLaborCostFromShift } from './labor'
 import type { Env, LineEvent, LineWebhookBody, Shift, Staff } from '../types'
 
 interface InvitePayload {
-  tenant_id?: string
   staff_id?: string
   name?: string
   role?: Staff['role']
@@ -22,7 +21,6 @@ interface InvitePayload {
 
 interface ShiftLookup {
   id: string
-  tenant_id: string
   staff_id: string
   property_id: string
   reservation_id: string | null
@@ -61,15 +59,10 @@ const DEFAULT_AUTO_MESSAGES: Record<Staff['role'], Record<AutoEvent, string>> = 
   },
 }
 
-async function getAutoMessage(
-  env: Env,
-  tenantId: string,
-  role: Staff['role'],
-  event: AutoEvent
-): Promise<string> {
+async function getAutoMessage(env: Env, role: Staff['role'], event: AutoEvent): Promise<string> {
   const row = await env.DB
-    .prepare('SELECT body_text FROM staff_auto_messages WHERE role = ? AND event_type = ? AND tenant_id = ?')
-    .bind(role, event, tenantId)
+    .prepare('SELECT body_text FROM staff_auto_messages WHERE role = ? AND event_type = ?')
+    .bind(role, event)
     .first<{ body_text: string }>()
   return row?.body_text?.trim() || DEFAULT_AUTO_MESSAGES[role][event]
 }
@@ -192,7 +185,7 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
 
   if (normalized === 'ok') {
     const confirmed = await confirmLatestShiftForStaff(env, staff)
-    const acceptMsg = await getAutoMessage(env, staff.tenant_id, staff.role, 'shift_accept')
+    const acceptMsg = await getAutoMessage(env, staff.role, 'shift_accept')
     await replyText(
       event.replyToken!,
       confirmed ? acceptMsg : '承諾待ちのシフトが見つかりませんでした。',
@@ -203,7 +196,7 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
 
   if (normalized === 'ng') {
     const declined = await declineLatestShiftForStaff(env, staff)
-    const declineMsg = await getAutoMessage(env, staff.tenant_id, staff.role, 'shift_decline')
+    const declineMsg = await getAutoMessage(env, staff.role, 'shift_decline')
     await replyText(
       event.replyToken!,
       declined ? declineMsg : '辞退対象のシフトが見つかりませんでした。',
@@ -216,8 +209,8 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
     const completed = await completeLatestShiftForStaff(env, staff)
     if (completed) {
       // チェックリスト未完了チェック
-      const unchecked = await getUncheckedItems(env, staff.tenant_id, staff.id)
-      const completeMsg = await getAutoMessage(env, staff.tenant_id, staff.role, 'shift_complete')
+      const unchecked = await getUncheckedItems(env, staff.id)
+      const completeMsg = await getAutoMessage(env, staff.role, 'shift_complete')
       const msg = unchecked.length > 0
         ? `完了を記録しました。\n\n⚠️ 未チェック項目:\n${unchecked.map(i => `・${i.label}`).join('\n')}\n\n確認の上、写真を送信してください。`
         : completeMsg
@@ -254,14 +247,12 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
       .prepare(`
         SELECT r.guest_name, r.checkin_date, r.checkout_date, r.platform, r.status, p.name as property_name
         FROM reservations r
-        LEFT JOIN properties p ON r.property_id = p.id AND p.tenant_id = r.tenant_id
-        WHERE r.tenant_id = ?
-          AND r.checkout_date >= ?
-          AND r.status IN ('confirmed', 'completed')
+        LEFT JOIN properties p ON r.property_id = p.id
+        WHERE r.checkout_date >= ? AND r.status IN ('confirmed', 'completed')
         ORDER BY r.checkin_date ASC
         LIMIT 30
       `)
-      .bind(staff.tenant_id, today)
+      .bind(today)
       .all<{ guest_name: string | null; checkin_date: string; checkout_date: string; platform: string; status: string; property_name: string | null }>()
 
     // 表示設定（管理画面のLINE設定で変更可能）
@@ -322,7 +313,7 @@ async function handleTextMessage(event: LineEvent, env: Env): Promise<void> {
 
   const collecting = await env.KV.get(SHIFT_COLLECTION_ACTIVE_KEY)
   if (collecting === 'true') {
-    await saveShiftRequest(env, staff.tenant_id, staff.id, text)
+    await saveShiftRequest(env, staff.id, text)
     await replyText(
       event.replyToken!,
       'シフト希望を受け付けました。必要があれば追記も送ってください。',
@@ -344,7 +335,7 @@ async function handleImageMessage(event: LineEvent, env: Env): Promise<void> {
     return
   }
 
-  const shift = await findLatestCompletableShift(env, staff.tenant_id, staff.id)
+  const shift = await findLatestCompletableShift(env, staff.id)
   if (!shift) {
     await replyText(
       event.replyToken,
@@ -355,8 +346,8 @@ async function handleImageMessage(event: LineEvent, env: Env): Promise<void> {
   }
 
   const currentPhotos = await env.DB
-    .prepare('SELECT completion_photo_urls FROM shifts WHERE id = ? AND tenant_id = ?')
-    .bind(shift.id, staff.tenant_id)
+    .prepare('SELECT completion_photo_urls FROM shifts WHERE id = ?')
+    .bind(shift.id)
     .first<{ completion_photo_urls: string | null }>()
 
   const photos = safeJsonArray(currentPhotos?.completion_photo_urls)
@@ -366,9 +357,9 @@ async function handleImageMessage(event: LineEvent, env: Env): Promise<void> {
     .prepare(`
       UPDATE shifts
       SET completion_photo_urls = ?, updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(JSON.stringify(photos), shift.id, staff.tenant_id)
+    .bind(JSON.stringify(photos), shift.id)
     .run()
 
   await replyText(
@@ -382,18 +373,8 @@ async function handlePostbackEvent(event: LineEvent, env: Env): Promise<void> {
   const data = event.postback?.data
   if (!data || !event.replyToken) return
 
-  const staff = event.source.userId ? await findStaffByLineUserId(env, event.source.userId) : null
-  if (!staff) {
-    await replyText(
-      event.replyToken,
-      '未登録のアカウントです。招待コード6桁を送信してください。',
-      env.LINE_STAFF_ACCESS_TOKEN
-    )
-    return
-  }
-
   const params = parsePostbackData(data)
-  const shift = await findShiftFromPostback(env, staff.tenant_id, params, event.source.userId)
+  const shift = await findShiftFromPostback(env, params, event.source.userId)
 
   if (!shift) {
     await replyText(
@@ -404,18 +385,19 @@ async function handlePostbackEvent(event: LineEvent, env: Env): Promise<void> {
     return
   }
 
-  const role: Staff['role'] = staff.role
+  const staff = event.source.userId ? await findStaffByLineUserId(env, event.source.userId) : null
+  const role: Staff['role'] = staff?.role ?? 'cleaner'
 
   if (params.action === 'confirm_shift') {
     await confirmShift(env, shift)
-    const msg = await getAutoMessage(env, staff.tenant_id, role, 'shift_accept')
+    const msg = await getAutoMessage(env, role, 'shift_accept')
     await replyText(event.replyToken, msg, env.LINE_STAFF_ACCESS_TOKEN)
     return
   }
 
   if (params.action === 'decline_shift') {
     await declineShift(env, shift)
-    const msg = await getAutoMessage(env, staff.tenant_id, role, 'shift_decline')
+    const msg = await getAutoMessage(env, role, 'shift_decline')
     await replyText(event.replyToken, msg, env.LINE_STAFF_ACCESS_TOKEN)
   }
 }
@@ -436,40 +418,22 @@ async function tryRegisterStaffFromInvite(
   const employmentType = invite.employment_type ?? 'part_time'
   const hourlyWage = invite.hourly_wage ?? null
 
-  // tenant_id は invite 側で必須。staff_id 経由の場合は DB から補完する。
-  let tenantId = invite.tenant_id ?? ''
-
   let staffId = invite.staff_id ?? ''
   if (staffId) {
-    if (!tenantId) {
-      const existing = await env.DB
-        .prepare('SELECT tenant_id FROM staff WHERE id = ?')
-        .bind(staffId)
-        .first<{ tenant_id: string }>()
-      tenantId = existing?.tenant_id ?? ''
-    }
-    if (!tenantId) {
-      throw new Error('invite missing tenant_id and staff record not found')
-    }
-
     await env.DB
       .prepare(`
         UPDATE staff
         SET line_user_id = ?, name = ?, role = ?, employment_type = ?, hourly_wage = ?,
             invited_at = COALESCE(invited_at, datetime('now')), is_active = 1, updated_at = datetime('now')
-        WHERE id = ? AND tenant_id = ?
+        WHERE id = ?
       `)
-      .bind(lineUserId, name, role, employmentType, hourlyWage, staffId, tenantId)
+      .bind(lineUserId, name, role, employmentType, hourlyWage, staffId)
       .run()
   } else {
-    if (!tenantId) {
-      throw new Error('invite missing tenant_id')
-    }
-
-    // 同じ line_user_id & tenant_id で無効化済みのスタッフがいれば再有効化する
+    // 同じ line_user_id で無効化済みのスタッフがいれば再有効化する
     const deactivated = await env.DB
-      .prepare('SELECT id FROM staff WHERE line_user_id = ? AND tenant_id = ? AND is_active = 0')
-      .bind(lineUserId, tenantId)
+      .prepare('SELECT id FROM staff WHERE line_user_id = ? AND is_active = 0')
+      .bind(lineUserId)
       .first<{ id: string }>()
 
     if (deactivated) {
@@ -479,18 +443,18 @@ async function tryRegisterStaffFromInvite(
           UPDATE staff
           SET name = ?, role = ?, employment_type = ?, hourly_wage = ?,
               is_active = 1, invited_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ? AND tenant_id = ?
+          WHERE id = ?
         `)
-        .bind(name, role, employmentType, hourlyWage, staffId, tenantId)
+        .bind(name, role, employmentType, hourlyWage, staffId)
         .run()
     } else {
       const result = await env.DB
         .prepare(`
-          INSERT INTO staff (tenant_id, line_user_id, name, role, employment_type, hourly_wage, invited_at)
-          VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+          INSERT INTO staff (line_user_id, name, role, employment_type, hourly_wage, invited_at)
+          VALUES (?, ?, ?, ?, ?, datetime('now'))
           RETURNING id
         `)
-        .bind(tenantId, lineUserId, name, role, employmentType, hourlyWage)
+        .bind(lineUserId, name, role, employmentType, hourlyWage)
         .first<{ id: string }>()
       staffId = result?.id ?? ''
     }
@@ -503,8 +467,8 @@ async function tryRegisterStaffFromInvite(
   if (invite.property_ids && invite.property_ids.length > 0) {
     for (const propertyId of invite.property_ids) {
       await env.DB
-        .prepare('INSERT OR IGNORE INTO staff_properties (tenant_id, staff_id, property_id) VALUES (?, ?, ?)')
-        .bind(tenantId, staffId, propertyId)
+        .prepare('INSERT OR IGNORE INTO staff_properties (staff_id, property_id) VALUES (?, ?)')
+        .bind(staffId, propertyId)
         .run()
     }
   }
@@ -527,7 +491,6 @@ async function tryRegisterStaffFromInvite(
 
 async function saveShiftRequest(
   env: Env,
-  tenantId: string,
   staffId: string,
   text: string
 ): Promise<void> {
@@ -535,42 +498,42 @@ async function saveShiftRequest(
 
   await env.DB
     .prepare(`
-      INSERT INTO shift_requests (tenant_id, staff_id, week_start_date, available_dates_json, available_time_json, notes, collected_at)
-      VALUES (?, ?, ?, '[]', '{}', ?, datetime('now'))
+      INSERT INTO shift_requests (staff_id, week_start_date, available_dates_json, available_time_json, notes, collected_at)
+      VALUES (?, ?, '[]', '{}', ?, datetime('now'))
       ON CONFLICT(staff_id, week_start_date)
       DO UPDATE SET
         notes = excluded.notes,
         collected_at = datetime('now')
     `)
-    .bind(tenantId, staffId, weekStartDate, text)
+    .bind(staffId, weekStartDate, text)
     .run()
 }
 
 async function confirmLatestShiftForStaff(env: Env, staff: Staff): Promise<boolean> {
-  const shift = await findLatestNotifiedShift(env, staff.tenant_id, staff.id)
+  const shift = await findLatestNotifiedShift(env, staff.id)
   if (!shift) return false
   await confirmShift(env, shift)
   return true
 }
 
 async function declineLatestShiftForStaff(env: Env, staff: Staff): Promise<boolean> {
-  const shift = await findLatestNotifiedShift(env, staff.tenant_id, staff.id)
+  const shift = await findLatestNotifiedShift(env, staff.id)
   if (!shift) return false
   await declineShift(env, shift)
   return true
 }
 
 async function completeLatestShiftForStaff(env: Env, staff: Staff): Promise<boolean> {
-  const shift = await findLatestCompletableShift(env, staff.tenant_id, staff.id)
+  const shift = await findLatestCompletableShift(env, staff.id)
   if (!shift) return false
 
   await env.DB
     .prepare(`
       UPDATE shifts
       SET status = 'completed', updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(shift.id, staff.tenant_id)
+    .bind(shift.id)
     .run()
 
   const detail = await getShiftDetail(env, shift)
@@ -586,10 +549,9 @@ async function completeLatestShiftForStaff(env: Env, staff: Staff): Promise<bool
       LEFT JOIN cleaning_checklist_results r
         ON r.item_id = i.id AND r.shift_id = ?
       WHERE i.property_id = ?
-        AND i.tenant_id = ?
         AND IFNULL(r.checked, 0) = 0
     `)
-    .bind(shift.id, shift.property_id, staff.tenant_id)
+    .bind(shift.id, shift.property_id)
     .first<{ count: number }>()
 
   if ((unchecked?.count ?? 0) > 0) {
@@ -602,7 +564,7 @@ async function completeLatestShiftForStaff(env: Env, staff: Staff): Promise<bool
 
   // 人件費を自動計算
   try {
-    await createLaborCostFromShift(env, staff.tenant_id, shift.id)
+    await createLaborCostFromShift(env, shift.id)
   } catch (err) {
     console.error('labor cost creation failed', err)
   }
@@ -615,9 +577,9 @@ async function confirmShift(env: Env, shift: ShiftLookup): Promise<void> {
     .prepare(`
       UPDATE shifts
       SET status = 'confirmed', updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(shift.id, shift.tenant_id)
+    .bind(shift.id)
     .run()
 
   const detail = await getShiftDetail(env, shift)
@@ -632,9 +594,9 @@ async function declineShift(env: Env, shift: ShiftLookup): Promise<void> {
     .prepare(`
       UPDATE shifts
       SET status = 'declined', updated_at = datetime('now')
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `)
-    .bind(shift.id, shift.tenant_id)
+    .bind(shift.id)
     .run()
 
   const nextStaff = await findNextAssignableStaff(env, shift)
@@ -650,11 +612,11 @@ async function declineShift(env: Env, shift: ShiftLookup): Promise<void> {
 
   const insert = await env.DB
     .prepare(`
-      INSERT INTO shifts (tenant_id, staff_id, property_id, reservation_id, task_type, date, status, proposed_by)
-      VALUES (?, ?, ?, ?, ?, ?, 'notified', 'system')
+      INSERT INTO shifts (staff_id, property_id, reservation_id, task_type, date, status, proposed_by)
+      VALUES (?, ?, ?, ?, ?, 'notified', 'system')
       RETURNING id
     `)
-    .bind(shift.tenant_id, nextStaff.id, shift.property_id, shift.reservation_id, shift.task_type, shift.date)
+    .bind(nextStaff.id, shift.property_id, shift.reservation_id, shift.task_type, shift.date)
     .first<{ id: string }>()
 
   const text = buildCleaningNotificationText(detail)
@@ -680,7 +642,7 @@ async function declineShift(env: Env, shift: ShiftLookup): Promise<void> {
 async function findStaffByLineUserId(env: Env, lineUserId: string): Promise<Staff | null> {
   const staff = await env.DB
     .prepare(`
-      SELECT id, tenant_id, line_user_id, name, role, employment_type, hourly_wage, wage_type, is_active, invited_at, created_at, updated_at
+      SELECT id, line_user_id, name, role, employment_type, hourly_wage, is_active, invited_at, created_at, updated_at
       FROM staff
       WHERE line_user_id = ? AND is_active = 1
       LIMIT 1
@@ -691,39 +653,31 @@ async function findStaffByLineUserId(env: Env, lineUserId: string): Promise<Staf
   return staff ?? null
 }
 
-async function findLatestNotifiedShift(
-  env: Env,
-  tenantId: string,
-  staffId: string
-): Promise<ShiftLookup | null> {
+async function findLatestNotifiedShift(env: Env, staffId: string): Promise<ShiftLookup | null> {
   const shift = await env.DB
     .prepare(`
-      SELECT id, tenant_id, staff_id, property_id, reservation_id, task_type, date, status
+      SELECT id, staff_id, property_id, reservation_id, task_type, date, status
       FROM shifts
-      WHERE staff_id = ? AND tenant_id = ? AND status = 'notified'
+      WHERE staff_id = ? AND status = 'notified'
       ORDER BY date DESC, created_at DESC
       LIMIT 1
     `)
-    .bind(staffId, tenantId)
+    .bind(staffId)
     .first<ShiftLookup>()
 
   return shift ?? null
 }
 
-async function findLatestCompletableShift(
-  env: Env,
-  tenantId: string,
-  staffId: string
-): Promise<ShiftLookup | null> {
+async function findLatestCompletableShift(env: Env, staffId: string): Promise<ShiftLookup | null> {
   const shift = await env.DB
     .prepare(`
-      SELECT id, tenant_id, staff_id, property_id, reservation_id, task_type, date, status
+      SELECT id, staff_id, property_id, reservation_id, task_type, date, status
       FROM shifts
-      WHERE staff_id = ? AND tenant_id = ? AND status = 'confirmed'
+      WHERE staff_id = ? AND status = 'confirmed'
       ORDER BY updated_at DESC, date DESC
       LIMIT 1
     `)
-    .bind(staffId, tenantId)
+    .bind(staffId)
     .first<ShiftLookup>()
 
   return shift ?? null
@@ -731,23 +685,19 @@ async function findLatestCompletableShift(
 
 async function findShiftFromPostback(
   env: Env,
-  tenantId: string,
   params: Record<string, string>,
   lineUserId: string
 ): Promise<ShiftLookup | null> {
   if (params.shift_id) {
     const shift = await env.DB
       .prepare(`
-        SELECT sh.id, sh.tenant_id, sh.staff_id, sh.property_id, sh.reservation_id, sh.task_type, sh.date, sh.status
+        SELECT sh.id, sh.staff_id, sh.property_id, sh.reservation_id, sh.task_type, sh.date, sh.status
         FROM shifts sh
         JOIN staff s ON s.id = sh.staff_id
-        WHERE sh.id = ?
-          AND sh.tenant_id = ?
-          AND s.line_user_id = ?
-          AND s.tenant_id = ?
+        WHERE sh.id = ? AND s.line_user_id = ?
         LIMIT 1
       `)
-      .bind(params.shift_id, tenantId, lineUserId, tenantId)
+      .bind(params.shift_id, lineUserId)
       .first<ShiftLookup>()
 
     return shift ?? null
@@ -757,27 +707,23 @@ async function findShiftFromPostback(
 
   const shift = await env.DB
     .prepare(`
-      SELECT sh.id, sh.tenant_id, sh.staff_id, sh.property_id, sh.reservation_id, sh.task_type, sh.date, sh.status
+      SELECT sh.id, sh.staff_id, sh.property_id, sh.reservation_id, sh.task_type, sh.date, sh.status
       FROM shifts sh
       JOIN staff s ON s.id = sh.staff_id
       WHERE sh.property_id = ?
         AND sh.staff_id = ?
-        AND sh.tenant_id = ?
         AND (? = '' OR IFNULL(sh.reservation_id, '') = ?)
         AND sh.status = 'notified'
         AND s.line_user_id = ?
-        AND s.tenant_id = ?
       ORDER BY sh.created_at DESC
       LIMIT 1
     `)
     .bind(
       params.property_id,
       params.staff_id,
-      tenantId,
       params.reservation_id ?? '',
       params.reservation_id ?? '',
-      lineUserId,
-      tenantId
+      lineUserId
     )
     .first<ShiftLookup>()
 
@@ -794,12 +740,11 @@ async function findNextAssignableStaff(
       FROM staff s
       JOIN staff_properties sp ON sp.staff_id = s.id
       WHERE sp.property_id = ?
-        AND s.tenant_id = ?
         AND s.is_active = 1
         AND s.role IN ('cleaner', 'manager')
       ORDER BY s.created_at ASC
     `)
-    .bind(shift.property_id, shift.tenant_id)
+    .bind(shift.property_id)
     .all<{ id: string; line_user_id: string }>()
 
   const staffList = staffRows.results
@@ -815,7 +760,6 @@ async function findNextAssignableStaff(
         FROM shifts
         WHERE staff_id = ?
           AND property_id = ?
-          AND tenant_id = ?
           AND IFNULL(reservation_id, '') = ?
           AND task_type = ?
           AND date = ?
@@ -825,7 +769,6 @@ async function findNextAssignableStaff(
       .bind(
         candidate.id,
         shift.property_id,
-        shift.tenant_id,
         shift.reservation_id ?? '',
         shift.task_type,
         shift.date
@@ -848,12 +791,12 @@ async function getShiftDetail(
     .prepare(`
       SELECT p.name AS property_name, s.name AS staff_name
       FROM shifts sh
-      JOIN properties p ON p.id = sh.property_id AND p.tenant_id = sh.tenant_id
-      JOIN staff s ON s.id = sh.staff_id AND s.tenant_id = sh.tenant_id
-      WHERE sh.id = ? AND sh.tenant_id = ?
+      JOIN properties p ON p.id = sh.property_id
+      JOIN staff s ON s.id = sh.staff_id
+      WHERE sh.id = ?
       LIMIT 1
     `)
-    .bind(shift.id, shift.tenant_id)
+    .bind(shift.id)
     .first<{ property_name: string; staff_name: string }>()
 
   return {
@@ -872,11 +815,11 @@ async function getPropertyReservationInfo(
              r.checkout_time AS checkout_time,
              p.checkout_time AS default_checkout_time
       FROM properties p
-      LEFT JOIN reservations r ON r.id = ? AND r.tenant_id = p.tenant_id
-      WHERE p.id = ? AND p.tenant_id = ?
+      LEFT JOIN reservations r ON r.id = ?
+      WHERE p.id = ?
       LIMIT 1
     `)
-    .bind(shift.reservation_id, shift.property_id, shift.tenant_id)
+    .bind(shift.reservation_id, shift.property_id)
     .first<PropertyReservationInfo>()
 
   return {
@@ -985,14 +928,10 @@ async function safeReply(replyToken: string, text: string, env: Env): Promise<vo
   }
 }
 
-async function getUncheckedItems(
-  env: Env,
-  tenantId: string,
-  staffId: string
-): Promise<Array<{ label: string }>> {
+async function getUncheckedItems(env: Env, staffId: string): Promise<Array<{ label: string }>> {
   const shift = await env.DB
-    .prepare(`SELECT id, property_id FROM shifts WHERE staff_id = ? AND tenant_id = ? AND status = 'completed' ORDER BY updated_at DESC LIMIT 1`)
-    .bind(staffId, tenantId)
+    .prepare(`SELECT id, property_id FROM shifts WHERE staff_id = ? AND status = 'completed' ORDER BY updated_at DESC LIMIT 1`)
+    .bind(staffId)
     .first<{ id: string; property_id: string }>()
   if (!shift) return []
 
@@ -1001,12 +940,10 @@ async function getUncheckedItems(
       SELECT ci.label
       FROM cleaning_checklist_items ci
       LEFT JOIN cleaning_checklist_results cr ON cr.item_id = ci.id AND cr.shift_id = ?
-      WHERE ci.property_id = ?
-        AND ci.tenant_id = ?
-        AND (cr.checked IS NULL OR cr.checked = 0)
+      WHERE ci.property_id = ? AND (cr.checked IS NULL OR cr.checked = 0)
       ORDER BY ci.sort_order ASC
     `)
-    .bind(shift.id, shift.property_id, tenantId)
+    .bind(shift.id, shift.property_id)
     .all<{ label: string }>()
   return items.results
 }
@@ -1018,9 +955,8 @@ async function getStaffChecklist(env: Env, staff: Staff): Promise<string | null>
       FROM properties p
       JOIN staff_properties sp ON sp.property_id = p.id
       WHERE sp.staff_id = ?
-        AND p.tenant_id = ?
     `)
-    .bind(staff.id, staff.tenant_id)
+    .bind(staff.id)
     .all<{ id: string; name: string }>()
 
   if (properties.results.length === 0) return null
@@ -1028,13 +964,13 @@ async function getStaffChecklist(env: Env, staff: Staff): Promise<string | null>
   const sections: string[] = []
   for (const prop of properties.results) {
     const items = await env.DB
-      .prepare('SELECT label FROM cleaning_checklist_items WHERE property_id = ? AND tenant_id = ? ORDER BY sort_order ASC')
-      .bind(prop.id, staff.tenant_id)
+      .prepare('SELECT label FROM cleaning_checklist_items WHERE property_id = ? ORDER BY sort_order ASC')
+      .bind(prop.id)
       .all<{ label: string }>()
 
     const manualUrl = await env.DB
-      .prepare('SELECT cleaning_manual_url FROM properties WHERE id = ? AND tenant_id = ?')
-      .bind(prop.id, staff.tenant_id)
+      .prepare('SELECT cleaning_manual_url FROM properties WHERE id = ?')
+      .bind(prop.id)
       .first<{ cleaning_manual_url: string | null }>()
 
     const lines: string[] = [`📍 ${prop.name}`]
@@ -1057,11 +993,11 @@ async function getTodayShifts(env: Env, staff: Staff): Promise<string | null> {
     .prepare(`
       SELECT s.task_type, s.date, s.start_time, s.end_time, s.status, p.name as property_name
       FROM shifts s
-      LEFT JOIN properties p ON p.id = s.property_id AND p.tenant_id = s.tenant_id
-      WHERE s.staff_id = ? AND s.tenant_id = ? AND s.date = ?
+      LEFT JOIN properties p ON p.id = s.property_id
+      WHERE s.staff_id = ? AND s.date = ?
       ORDER BY s.start_time ASC
     `)
-    .bind(staff.id, staff.tenant_id, today)
+    .bind(staff.id, today)
     .all<{ task_type: string; date: string; start_time: string | null; end_time: string | null; status: string; property_name: string | null }>()
 
   if (shifts.results.length === 0) return null
